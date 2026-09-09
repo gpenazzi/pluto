@@ -123,7 +123,13 @@ before the next starts.
   Agent SDK with the subscription login; 11 tools behind one registry; scripted provider
   for tests; transcripts in `~/.pluto/chats/`. Verified live: valuation question, ISIN
   purchase recorded without confirmation, ambiguous name triggers a question, multi-turn
-  disambiguation then undo. Next: M4 (web UI).
+  disambiguation then undo.
+- 2026-09-09: M4 done. `pluto serve` runs FastAPI (JSON API over the same tool registry
+  as the chat, SSE chat stream) and serves the built React UI from `web/dist`: hero
+  total, allocation donut with breakdown switch and legend, holdings table with quote
+  source/age/staleness and provider health, transaction form + instrument search, transaction
+  list with remove, version list with revert, streaming chat panel. **First deliverable
+  complete.** Next: M5 (Anthropic API provider).
 
 ### Known limits to revisit
 

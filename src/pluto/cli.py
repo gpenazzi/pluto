@@ -532,3 +532,35 @@ def chat(
             await ctx.close()
 
     _run(run())
+
+
+# --- web -----------------------------------------------------------------------------------
+
+
+@app.command()
+def serve(
+    portfolio: PortfolioOpt = None,
+    host: str = "127.0.0.1",
+    port: int = 8321,
+    provider: str | None = typer.Option(None, help="claude_agent (default) | anthropic_api"),
+    model: str | None = None,
+    open_browser: bool = typer.Option(True, "--open/--no-open"),
+):
+    """Run the web UI (API + built frontend) on localhost."""
+    import webbrowser
+
+    import uvicorn
+
+    from pluto.api.app import WEB_DIST, create_app
+
+    _load(portfolio)
+    if not WEB_DIST.exists():
+        console.print(
+            "[yellow]web/dist not found: API only. Build with `cd web && npm run build`.[/]"
+        )
+    web_app = create_app(portfolio, provider, model)
+    url = f"http://{host}:{port}"
+    console.print(f"Pluto at [bold]{url}[/]")
+    if open_browser and WEB_DIST.exists():
+        webbrowser.open(url)
+    uvicorn.run(web_app, host=host, port=port, log_level="warning")

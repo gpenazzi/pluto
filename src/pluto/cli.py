@@ -464,3 +464,71 @@ def resolve(
         ins = p.add_instrument(u.to_instrument())
         info = store.commit(p, f"Add instrument {ins.name}")
         console.print(f"Added instrument {ins.id} → version {info.version}")
+
+
+# --- chat ----------------------------------------------------------------------------------
+
+
+@app.command()
+def chat(
+    portfolio: PortfolioOpt = None,
+    message: Annotated[
+        str | None, typer.Option("--message", "-m", help="Send one message and exit")
+    ] = None,
+    provider: str | None = typer.Option(None, help="claude_agent (default) | anthropic_api"),
+    model: str | None = typer.Option(None, help="Model override, e.g. sonnet, opus"),
+    show_tools: bool = typer.Option(True, help="Print tool calls as they happen"),
+):
+    """Talk to Pluto. Transactions you describe are recorded when unambiguous."""
+    from pluto.chat.prompt import system_prompt
+    from pluto.chat.providers import make_provider
+    from pluto.chat.session import Transcript
+    from pluto.chat.tools import ChatContext, ToolRegistry
+
+    store, p = _load(portfolio)
+    ctx = ChatContext.create(store)
+    registry = ToolRegistry(ctx)
+    prov = make_provider(
+        registry, system_prompt(p, store.head()), provider, model, cwd=paths.home()
+    )
+    transcript = Transcript(p.name)
+
+    async def turn(text: str) -> None:
+        transcript.user(text)
+        async for ev in prov.send(text):
+            transcript.event(ev)
+            if ev.type == "text":
+                console.print(ev.text)
+            elif ev.type == "tool_call" and show_tools:
+                args = ", ".join(f"{k}={v!r}" for k, v in ev.args.items())
+                console.print(f"[dim]→ {ev.name}({args})[/]")
+            elif ev.type == "tool_result" and show_tools:
+                mark = "[dim]✓[/]" if ev.ok else "[red]✗[/]"
+                console.print(f"{mark} [dim]{ev.text[:160]}[/]")
+            elif ev.type == "error":
+                err.print(ev.text)
+
+    async def run() -> None:
+        try:
+            await prov.start()
+            if message:
+                await turn(message)
+                return
+            console.print(
+                f"[bold]Pluto[/] · {p.name} · provider {prov.name}. "
+                f"Type your message, 'exit' to quit."
+            )
+            while True:
+                try:
+                    text = console.input("[bold cyan]you>[/] ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    break
+                if text.lower() in ("exit", "quit", "q"):
+                    break
+                if text:
+                    await turn(text)
+        finally:
+            await prov.close()
+            await ctx.close()
+
+    _run(run())

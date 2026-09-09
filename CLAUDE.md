@@ -8,6 +8,8 @@ the milestone order (strict) and the decisions log. Keep both up to date.
 - `uv run pluto --help` for the CLI. `uv run pluto demo` loads the demo portfolio.
 - `make check` = ruff + pyright + pytest. Run before claiming anything works.
 - `uv run pytest -m live` runs the opt-in tests that hit real quote endpoints.
+- `uv run pluto chat -m "..."` is the quickest live check of the LLM layer (uses the
+  Claude Code subscription login, no API key). Point `PLUTO_HOME` at a scratch dir first.
 
 ## Rules
 - `src/pluto/core` has no I/O and no network. Keep it that way.
@@ -15,3 +17,5 @@ the milestone order (strict) and the decisions log. Keep both up to date.
 - Every quote carries source, as_of and staleness. Never return a bare number.
 - User data lives in `~/.pluto`, never in the repo. Tests use `tmp_path`.
 - Network in tests is mocked with `respx`; live tests are marked `@pytest.mark.live`.
+- LLM tools live in `src/pluto/chat/tools.py` only; providers adapt that registry and
+  contain no portfolio logic. Test tool behaviour with `ScriptedProvider`, not a real LLM.

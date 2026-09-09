@@ -337,6 +337,66 @@ async def test_resolve_by_name_single_match_has_no_isin(client):
     assert u.to_instrument().id == "AAPL"
 
 
+@respx.mock
+async def test_resolve_exact_symbol_query_is_unique(client):
+    respx.get(SEARCH_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "quotes": [
+                    {
+                        "symbol": "AMZN",
+                        "exchange": "NMS",
+                        "quoteType": "EQUITY",
+                        "longname": "Amazon.com, Inc.",
+                    },
+                    {
+                        "symbol": "AMZ.DE",
+                        "exchange": "GER",
+                        "quoteType": "EQUITY",
+                        "longname": "Amazon.com, Inc.",
+                    },
+                    {
+                        "symbol": "AMZN.NE",
+                        "exchange": "NEO",
+                        "quoteType": "EQUITY",
+                        "longname": "Amazon CDR",
+                    },
+                ]
+            },
+        )
+    )
+    respx.post(FIGI_SEARCH_URL).mock(return_value=httpx.Response(200, json={"data": []}))
+    respx.get(CHART_URL.format(symbol="AMZN")).mock(
+        return_value=httpx.Response(
+            200,
+            json=chart(
+                220, "USD", exchangeName="NMS", instrumentType="EQUITY", longName="Amazon.com, Inc."
+            ),
+        )
+    )
+    respx.get(CHART_URL.format(symbol="AMZ.DE")).mock(
+        return_value=httpx.Response(
+            200,
+            json=chart(
+                190, "EUR", exchangeName="GER", instrumentType="EQUITY", longName="Amazon.com, Inc."
+            ),
+        )
+    )
+    respx.get(CHART_URL.format(symbol="AMZN.NE")).mock(
+        return_value=httpx.Response(
+            200,
+            json=chart(
+                30, "CAD", exchangeName="NEO", instrumentType="EQUITY", longName="Amazon CDR"
+            ),
+        )
+    )
+    res = await InstrumentResolver(client).resolve(query="amzn")
+    u = res.unique
+    assert u is not None and u.name == "Amazon.com, Inc." and len(res.matches) == 2
+    assert u.preferred_symbol == "AMZ.DE"  # EUR listing still preferred for quoting
+
+
 def test_instrument_listing_helper():
     ins = Instrument(
         id="X",

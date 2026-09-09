@@ -91,9 +91,8 @@ class ResolveResult(BaseModel):
 
     @property
     def unique(self) -> ResolvedInstrument | None:
-        if len(self.matches) == 1 and self.matches[0].confidence >= 0.8:
-            return self.matches[0]
-        return None
+        strong = [m for m in self.matches if m.confidence >= 0.8]
+        return strong[0] if len(strong) == 1 else None
 
 
 class InstrumentResolver:
@@ -223,8 +222,18 @@ class InstrumentResolver:
                 )
             )
         out.sort(key=lambda m: -len(m.listings))
+        exact = [
+            m for m in out if any(ls.symbol.upper() == query.strip().upper() for ls in m.listings)
+        ]
         if len(out) == 1:
             out[0].confidence = 0.85
+        elif len(exact) == 1:  # the query is literally one listing's symbol
+            for m in out:
+                m.confidence = 0.3
+            exact[0].confidence = 0.9
+            exact[0].notes.append(f"query {query!r} is exactly this instrument's symbol")
+            out.remove(exact[0])
+            out.insert(0, exact[0])
         else:
             for m in out:
                 m.confidence = 0.4

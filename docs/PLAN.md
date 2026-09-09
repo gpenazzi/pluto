@@ -119,7 +119,11 @@ before the next starts.
 
 - 2026-09-09: M0, M1, M2 done. `pluto demo/show/add/remove/history/revert/undo`,
   `pluto value`, `pluto quotes doctor`, `pluto resolve` all verified against live endpoints.
-  Next: M3 (chat).
+- 2026-09-09: M3 done. `pluto chat` (REPL or `-m "one message"`) runs on the Claude
+  Agent SDK with the subscription login; 11 tools behind one registry; scripted provider
+  for tests; transcripts in `~/.pluto/chats/`. Verified live: valuation question, ISIN
+  purchase recorded without confirmation, ambiguous name triggers a question, multi-turn
+  disambiguation then undo. Next: M4 (web UI).
 
 ### Known limits to revisit
 

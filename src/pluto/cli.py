@@ -1,0 +1,466 @@
+"""Pluto command line."""
+
+from __future__ import annotations
+
+from datetime import date
+from decimal import Decimal, InvalidOperation
+from typing import Annotated
+
+import typer
+from rich.console import Console
+from rich.table import Table
+
+from pluto.core.demo import demo_portfolio
+from pluto.core.holdings import compute_holdings
+from pluto.core.model import Portfolio, PortfolioError, Transaction, TxType
+from pluto.store import paths
+from pluto.store.versions import StoreError, VersionStore
+
+app = typer.Typer(help="Pluto: a local, AI-first portfolio manager.", no_args_is_help=True)
+console = Console()
+err = Console(stderr=True, style="bold red")
+
+PortfolioOpt = Annotated[
+    str | None, typer.Option("--portfolio", "-p", help="Portfolio name (default: configured)")
+]
+
+
+def _store(name: str | None) -> VersionStore:
+    return VersionStore(paths.portfolio_dir(name or paths.default_portfolio()))
+
+
+def _load(name: str | None) -> tuple[VersionStore, Portfolio]:
+    store = _store(name)
+    try:
+        return store, store.load()
+    except StoreError as e:
+        err.print(f"{e}. Run `pluto demo` or `pluto init <name>` first.")
+        raise typer.Exit(1) from None
+
+
+def fmt(x: Decimal | None, places: int = 2) -> str:
+    if x is None:
+        return "-"
+    return f"{x:,.{places}f}"
+
+
+# --- portfolio lifecycle ---------------------------------------------------------------
+
+
+@app.command()
+def demo(name: str = "demo", force: bool = typer.Option(False, help="Overwrite if it exists")):
+    """Create the demo portfolio and make it the default."""
+    store = VersionStore(paths.portfolio_dir(name))
+    if store.exists() and not force:
+        err.print(f"portfolio {name!r} already exists (use --force to recreate)")
+        raise typer.Exit(1)
+    info = store.commit(demo_portfolio(name), "Demo portfolio")
+    paths.write_config({**paths.read_config(), "portfolio": name})
+    console.print(
+        f"Created demo portfolio [bold]{name}[/] (version {info.version}) at {store.root}"
+    )
+
+
+@app.command()
+def init(name: str, base_currency: str = "EUR"):
+    """Create an empty portfolio."""
+    store = VersionStore(paths.portfolio_dir(name))
+    if store.exists():
+        err.print(f"portfolio {name!r} already exists")
+        raise typer.Exit(1)
+    store.commit(Portfolio(name=name, base_currency=base_currency.upper()), "Empty portfolio")
+    paths.write_config({**paths.read_config(), "portfolio": name})
+    console.print(f"Created empty portfolio [bold]{name}[/] ({base_currency.upper()})")
+
+
+@app.command("use")
+def use_portfolio(name: str):
+    """Set the default portfolio."""
+    if name not in paths.list_portfolios():
+        err.print(f"no portfolio named {name!r}; known: {paths.list_portfolios()}")
+        raise typer.Exit(1)
+    paths.write_config({**paths.read_config(), "portfolio": name})
+    console.print(f"Default portfolio is now [bold]{name}[/]")
+
+
+@app.command("list")
+def list_cmd():
+    """List portfolios."""
+    default = paths.default_portfolio()
+    for n in paths.list_portfolios():
+        console.print(f"{'*' if n == default else ' '} {n}")
+
+
+# --- reading ---------------------------------------------------------------------------
+
+
+@app.command()
+def show(portfolio: PortfolioOpt = None):
+    """Holdings (quantities and cost, no market data)."""
+    store, p = _load(portfolio)
+    h = compute_holdings(p)
+    t = Table(title=f"{p.name} · version {store.head()} · base {p.base_currency}")
+    for col in ("Instrument", "ISIN", "Qty", "Avg cost", "Cost basis", "Ccy", "Realized"):
+        t.add_column(col, justify="right" if col not in ("Instrument", "ISIN", "Ccy") else "left")
+    for pos in h.open_positions():
+        ins = p.instrument(pos.instrument_id)
+        t.add_row(
+            ins.name,
+            ins.isin or "",
+            fmt(pos.quantity, 4),
+            fmt(pos.avg_cost),
+            fmt(pos.cost_basis),
+            ins.currency,
+            fmt(pos.realized_pnl),
+        )
+    console.print(t)
+    cash = ", ".join(f"{fmt(v)} {k}" for k, v in h.cash.items() if v)
+    console.print(f"Cash: {cash or '0'}")
+
+
+@app.command()
+def transactions(portfolio: PortfolioOpt = None, last: int = 0):
+    """List transactions."""
+    _, p = _load(portfolio)
+    t = Table()
+    for col in ("Id", "Date", "Type", "Instrument", "Qty", "Price", "Amount", "Ccy", "Fees", "Src"):
+        t.add_column(col)
+    rows = p.transactions[-last:] if last else p.transactions
+    for tx in rows:
+        name = p.instruments[tx.instrument_id].name if tx.instrument_id else ""
+        t.add_row(
+            tx.id,
+            str(tx.date),
+            tx.type.value,
+            name,
+            fmt(tx.quantity, 4),
+            fmt(tx.price),
+            fmt(tx.amount),
+            tx.currency,
+            fmt(tx.fees),
+            tx.source,
+        )
+    console.print(t)
+
+
+@app.command()
+def instruments(portfolio: PortfolioOpt = None):
+    """List instruments and their listings."""
+    _, p = _load(portfolio)
+    t = Table()
+    for col in ("Id", "Name", "Type", "Class", "Ccy", "Listings"):
+        t.add_column(col)
+    for ins in p.instruments.values():
+        t.add_row(
+            ins.id,
+            ins.name,
+            ins.asset_type.value,
+            ins.asset_class.value,
+            ins.currency,
+            ", ".join(ins.symbols_in_order()),
+        )
+    console.print(t)
+
+
+# --- writing ---------------------------------------------------------------------------
+
+
+def _dec(s: str, what: str) -> Decimal:
+    try:
+        return Decimal(s)
+    except InvalidOperation:
+        err.print(f"invalid {what}: {s!r}")
+        raise typer.Exit(2) from None
+
+
+@app.command()
+def add(
+    kind: Annotated[TxType, typer.Argument(help="buy|sell|dividend|fee|deposit|withdrawal")],
+    instrument: Annotated[str | None, typer.Option(help="ISIN, id or symbol")] = None,
+    quantity: str | None = None,
+    price: str | None = None,
+    amount: str | None = None,
+    currency: str | None = None,
+    fees: str = "0",
+    on: Annotated[str | None, typer.Option(help="Date YYYY-MM-DD (default today)")] = None,
+    note: str = "",
+    portfolio: PortfolioOpt = None,
+):
+    """Append a transaction (creates a new version)."""
+    store, p = _load(portfolio)
+    ins = None
+    if instrument:
+        ins = p.find_instrument(instrument)
+        if ins is None:
+            err.print(f"unknown instrument {instrument!r}; add it first (see `pluto instruments`)")
+            raise typer.Exit(1)
+    try:
+        tx = Transaction(
+            date=date.fromisoformat(on) if on else date.today(),
+            type=kind,
+            instrument_id=ins.id if ins else None,
+            quantity=_dec(quantity, "quantity") if quantity else None,
+            price=_dec(price, "price") if price else None,
+            amount=_dec(amount, "amount") if amount else None,
+            currency=(currency or (ins.currency if ins else p.base_currency)).upper(),
+            fees=_dec(fees, "fees"),
+            note=note,
+            source="cli",
+        )
+        p.add_transaction(tx)
+    except (ValueError, PortfolioError) as e:
+        err.print(str(e))
+        raise typer.Exit(1) from None
+    info = store.commit(p, tx.describe(ins.name if ins else None))
+    console.print(f"Added {tx.describe(ins.name if ins else None)} → version {info.version}")
+
+
+@app.command()
+def remove(tx_id: str, portfolio: PortfolioOpt = None):
+    """Remove a transaction by id (creates a new version)."""
+    store, p = _load(portfolio)
+    try:
+        tx = p.remove_transaction(tx_id)
+    except PortfolioError as e:
+        err.print(str(e))
+        raise typer.Exit(1) from None
+    info = store.commit(p, f"Remove {tx.describe()}")
+    console.print(f"Removed {tx.id} → version {info.version}")
+
+
+@app.command()
+def history(portfolio: PortfolioOpt = None):
+    """Version history."""
+    store, _ = _load(portfolio)
+    head = store.head()
+    t = Table(title=f"{store.root.name} · HEAD = {head}")
+    for col in ("Ver", "When", "Tx", "Message"):
+        t.add_column(col)
+    for v in store.history():
+        mark = "*" if v.version == head else " "
+        t.add_row(
+            f"{mark}{v.version}",
+            v.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+            str(v.transactions),
+            v.message,
+        )
+    console.print(t)
+
+
+@app.command()
+def revert(version: int, portfolio: PortfolioOpt = None):
+    """Go back to an earlier version (recorded as a new version, nothing is deleted)."""
+    store, _ = _load(portfolio)
+    try:
+        info = store.revert(version)
+    except StoreError as e:
+        err.print(str(e))
+        raise typer.Exit(1) from None
+    console.print(f"{info.message} → version {info.version}")
+
+
+@app.command()
+def undo(portfolio: PortfolioOpt = None):
+    """Revert to the version before HEAD."""
+    store, _ = _load(portfolio)
+    head = store.head()
+    if head <= 1:
+        err.print("nothing to undo")
+        raise typer.Exit(1)
+    info = store.revert(head - 1)
+    console.print(f"{info.message} → version {info.version}")
+
+
+if __name__ == "__main__":
+    app()
+
+
+# --- market data ---------------------------------------------------------------------
+
+quotes_app = typer.Typer(help="Market data: quotes, FX, diagnostics.")
+app.add_typer(quotes_app, name="quotes")
+
+
+def _run(coro):
+    import asyncio
+
+    return asyncio.run(coro)
+
+
+@app.command()
+def value(
+    portfolio: PortfolioOpt = None,
+    force: bool = typer.Option(False, help="Ignore the quote cache TTL"),
+    by: str = typer.Option(
+        "instrument", help="Breakdown: instrument|asset_type|asset_class|currency"
+    ),
+):
+    """Intraday valuation and allocation."""
+    from pluto.market.service import make_service
+
+    _, p = _load(portfolio)
+
+    async def go():
+        svc = make_service()
+        async with svc.client:
+            return await svc.value(p, force=force), svc
+
+    v, svc = _run(go())
+    t = Table(title=f"{p.name} · {v.as_of:%Y-%m-%d %H:%M} · {v.base_currency}")
+    for col, just in (
+        ("Instrument", "left"),
+        ("Qty", "right"),
+        ("Price", "right"),
+        ("Ccy", "left"),
+        ("Value", "right"),
+        ("Weight", "right"),
+        ("P&L", "right"),
+        ("P&L %", "right"),
+        ("Day %", "right"),
+        ("Quote", "left"),
+    ):
+        t.add_column(col, justify=just)  # type: ignore[arg-type]
+    for vp in v.positions:
+        q = vp.quote
+        if q is None:
+            src = "[red]missing[/]"
+        else:
+            age = (v.as_of - q.as_of).total_seconds() / 60
+            src = f"{q.source} {q.as_of:%H:%M}"
+            src = f"[yellow]stale[/] {src}" if q.is_stale else src
+            if age > 24 * 60:
+                src += f" ({age / 1440:.0f}d old)"
+        pnl = vp.unrealized_pnl
+        color = "green" if pnl and pnl >= 0 else "red"
+        t.add_row(
+            vp.instrument.name[:40],
+            fmt(vp.position.quantity, 2),
+            fmt(q.price) if q else "-",
+            q.currency if q else "",
+            fmt(vp.market_value),
+            f"{vp.weight * 100:.1f}%" if vp.market_value else "-",
+            f"[{color}]{fmt(pnl)}[/]" if pnl is not None else "-",
+            f"[{color}]{fmt(vp.unrealized_pnl_pct, 1)}%[/]" if pnl is not None else "-",
+            fmt(q.change_pct, 2) + "%" if q and q.change_pct is not None else "-",
+            src,
+        )
+    console.print(t)
+    console.print(
+        f"Cash: {fmt(v.cash_value)} {v.base_currency}   "
+        f"[bold]Total: {fmt(v.total_value)} {v.base_currency}[/]"
+    )
+    if v.missing:
+        console.print(f"[red]No price for: {', '.join(v.missing)}[/]")
+    if v.stale:
+        console.print(f"[yellow]Stale (from cache): {', '.join(v.stale)}[/]")
+    bt = Table(title=f"Allocation by {by}")
+    bt.add_column("Slice")
+    bt.add_column("Value", justify="right")
+    bt.add_column("Weight", justify="right")
+    for s in v.breakdown(by):
+        bt.add_row(s.label, fmt(s.value), f"{s.weight * 100:.1f}%")
+    console.print(bt)
+    _print_health(svc)
+
+
+def _print_health(svc) -> None:
+    bad = [h for h in svc.health.values() if h.total_failures]
+    for h in bad:
+        console.print(
+            f"[yellow]{h.name}: {h.total_failures}/{h.total_calls} failures, "
+            f"last: {h.last_error}[/]"
+        )
+
+
+@quotes_app.command("doctor")
+def quotes_doctor(portfolio: PortfolioOpt = None):
+    """Check every instrument against every quote provider."""
+    from pluto.market.service import DoctorRow, make_service
+
+    _, p = _load(portfolio)
+
+    async def go():
+        svc = make_service()
+        async with svc.client:
+            rows = await svc.doctor(list(p.instruments.values()))
+            fx = {}
+            for prov in svc.fx_providers:
+                try:
+                    r = await prov.rate("USD", p.base_currency)
+                    fx[prov.name] = f"{r.rate} ({r.as_of:%Y-%m-%d %H:%M})"
+                except Exception as e:
+                    fx[prov.name] = f"[red]{e}[/]"
+            return rows, fx
+
+    rows, fx = _run(go())
+    providers = sorted(
+        {r.provider for r in rows}, key=lambda n: [r.provider for r in rows].index(n)
+    )
+    t = Table(title="Quote providers")
+    t.add_column("Instrument")
+    for name in providers:
+        t.add_column(name)
+    by_ins: dict[str, dict[str, DoctorRow]] = {}
+    for r in rows:
+        by_ins.setdefault(r.instrument_id, {})[r.provider] = r
+    for ins_id, cells in by_ins.items():
+        ins = p.instruments[ins_id]
+        line = [f"{ins.name[:32]}\n[dim]{ins.symbols_in_order()[0]}[/]"]
+        for name in providers:
+            r = cells[name]
+            if r.ok:
+                line.append(
+                    f"[green]{r.price} {r.currency}[/]\n[dim]{r.as_of:%m-%d %H:%M} {r.ms}ms[/]"
+                )
+            elif r.error == "not supported":
+                line.append("[dim]n/a[/]")
+            else:
+                line.append(f"[red]FAIL[/]\n[dim]{(r.error or '')[:40]}[/]")
+        t.add_row(*line)
+    console.print(t)
+    ft = Table(title=f"FX USD/{p.base_currency}")
+    for name in fx:
+        ft.add_column(name)
+    ft.add_row(*fx.values())
+    console.print(ft)
+
+
+@app.command()
+def resolve(
+    query: Annotated[str | None, typer.Argument(help="Name, ticker or ISIN")] = None,
+    isin: str | None = None,
+    currency: str = "EUR",
+    add: bool = typer.Option(False, help="Add the (unique) match to the portfolio"),
+    portfolio: PortfolioOpt = None,
+):
+    """Find an instrument and its listings."""
+    from pluto.market.resolver import InstrumentResolver
+    from pluto.market.service import make_client
+
+    async def go():
+        client = make_client()
+        async with client:
+            return await InstrumentResolver(client).resolve(query, isin, currency)
+
+    res = _run(go())
+    for n in res.notes:
+        console.print(f"[yellow]{n}[/]")
+    for m in res.matches:
+        console.print(
+            f"[bold]{m.name}[/]  {m.isin or '(no ISIN)'}  {m.asset_type.value}/"
+            f"{m.asset_class.value}  confidence {m.confidence:.2f}"
+        )
+        for ls in m.listings:
+            mark = "*" if ls.symbol == m.preferred_symbol else " "
+            console.print(f"   {mark} {ls.symbol:<12} {ls.exchange:<6} {ls.currency}")
+        for n in m.notes:
+            console.print(f"     [dim]{n}[/]")
+    if add:
+        u = res.unique
+        if u is None:
+            err.print("no unique match; not adding")
+            raise typer.Exit(1)
+        store, p = _load(portfolio)
+        ins = p.add_instrument(u.to_instrument())
+        info = store.commit(p, f"Add instrument {ins.name}")
+        console.print(f"Added instrument {ins.id} → version {info.version}")

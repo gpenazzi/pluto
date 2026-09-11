@@ -136,3 +136,31 @@ export interface Performance {
   benchmark: { symbol: string; currency: string; twr: string | null } | null
   missing_history: string[]
 }
+
+export interface ExposureRow { label: string; weight_pct: number }
+export interface ExposureData {
+  available: boolean
+  reason?: string
+  covered_pct: number
+  by_region: ExposureRow[]
+  by_country: ExposureRow[]
+  by_sector: ExposureRow[]
+  unknown: { instrument_id: string; name: string; weight_pct: number; reason: string }[]
+  notes: string[]
+  instruments: { instrument_id: string; name: string; weight_pct: number; source: string | null; as_of: string | null; countries: Record<string, number>; sectors: Record<string, number>; note: string | null }[]
+}
+
+export interface RiskData {
+  available: boolean
+  reason?: string
+  start: string
+  end: string
+  days: number
+  portfolio_volatility_pct: string
+  diversification_ratio: string
+  benchmark: { symbol: string; volatility_pct: string | null; correlation: string | null } | null
+  holdings: { instrument_id: string; name: string; weight_pct: string; volatility_pct: string; contribution_pct: string; beta: string | null }[]
+  correlation: { ids: string[]; names: string[]; matrix: number[][] }
+  excluded: { instrument_id: string; name: string }[]
+  warnings: string[]
+}

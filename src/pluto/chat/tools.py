@@ -20,6 +20,12 @@ from pydantic import BaseModel, Field, ValidationError
 
 from pluto.core.holdings import compute_holdings
 from pluto.core.model import AssetClass, Portfolio, PortfolioError, Transaction, TxType
+from pluto.market.exposure import (
+    ExposureCache,
+    ExposureService,
+    default_exposure_path,
+    look_through,
+)
 from pluto.market.history import HistoryService, default_history_dir
 from pluto.market.resolver import InstrumentResolver, ResolvedInstrument, is_isin
 from pluto.market.service import QuoteService, make_service
@@ -36,6 +42,7 @@ class ChatContext:
     quotes: QuoteService
     resolver: InstrumentResolver
     history: HistoryService | None = None
+    exposure: ExposureService | None = None
     source: str = "chat"
 
     @classmethod
@@ -46,7 +53,13 @@ class ChatContext:
             quotes=svc,
             resolver=InstrumentResolver(svc.client),
             history=HistoryService(svc.client, default_history_dir()),
+            exposure=ExposureService(svc.client, ExposureCache(default_exposure_path())),
         )
+
+    def exposure_service(self) -> ExposureService:
+        if self.exposure is None:
+            self.exposure = ExposureService(self.quotes.client, ExposureCache(None))
+        return self.exposure
 
     def history_service(self) -> HistoryService:
         if self.history is None:
@@ -691,6 +704,180 @@ def _downsample(
     ]
 
 
+class ExposureArgs(BaseModel):
+    refresh: bool = Field(False, description="Re-fetch holdings data instead of using the cache")
+
+
+async def get_exposure(ctx: ChatContext, a: ExposureArgs) -> dict[str, Any]:
+    """Look-through allocation by region, country and sector. Weights are current market
+    values; holdings without data are listed with the reason. `available` is False only
+    when no holding could be looked through at all."""
+    import asyncio
+
+    p = ctx.portfolio()
+    v = await ctx.quotes.value(p)
+    valued = [vp for vp in v.positions if vp.market_value is not None and vp.market_value > 0]
+    if not valued:
+        return {"available": False, "reason": "no priced holdings to look through"}
+    total = sum(vp.market_value for vp in valued if vp.market_value is not None)
+    weights = {vp.instrument.id: float(vp.market_value / total) for vp in valued if vp.market_value}
+    svc = ctx.exposure_service()
+    results = await asyncio.gather(*(svc.get(vp.instrument, refresh=a.refresh) for vp in valued))
+    exposures = {vp.instrument.id: r for vp, r in zip(valued, results, strict=True)}
+    lt = look_through(weights, p.instruments, exposures)
+    any_data = any(r.exposure and (r.exposure.countries or r.exposure.sectors) for r in results)
+    failures = sorted({r.error for r in results if r.error})
+    if not any_data and failures:
+        return {
+            "available": False,
+            "reason": "I was unable to retrieve holdings data for any instrument: "
+            + "; ".join(failures),
+        }
+    rows = []
+    for vp in valued:
+        r = exposures[vp.instrument.id]
+        e = r.exposure
+        rows.append(
+            {
+                "instrument_id": vp.instrument.id,
+                "name": vp.instrument.name,
+                "weight_pct": round(weights[vp.instrument.id] * 100, 1),
+                "source": e.source if e else None,
+                "as_of": e.as_of.isoformat() if e and e.as_of else None,
+                "countries": dict(list(e.countries.items())[:5]) if e else {},
+                "sectors": dict(list(e.sectors.items())[:5]) if e else {},
+                "note": (r.error or (e.note if e else None)),
+            }
+        )
+    return {
+        "available": True,
+        "covered_pct": lt.covered_pct,
+        "by_region": [{"label": k, "weight_pct": v_} for k, v_ in lt.by_region.items()],
+        "by_country": [{"label": k, "weight_pct": v_} for k, v_ in lt.by_country.items()],
+        "by_sector": [{"label": k, "weight_pct": v_} for k, v_ in lt.by_sector.items()],
+        "unknown": lt.unknown,
+        "notes": lt.notes,
+        "instruments": rows,
+    }
+
+
+class SetExposureArgs(BaseModel):
+    instrument: str = Field(description="ISIN, symbol or id of an instrument in the portfolio")
+    countries: dict[str, float] | None = Field(
+        None, description='Country -> percent, e.g. {"United States": 60, "Japan": 40}'
+    )
+    sectors: dict[str, float] | None = Field(None, description="Sector -> percent")
+
+
+async def set_exposure(ctx: ChatContext, a: SetExposureArgs) -> dict[str, Any]:
+    """Store a look-through breakdown by hand (or from the assistant's knowledge) when no
+    source has it. Marked as user-provided and kept until refreshed explicitly."""
+    from pluto.market.exposure import Exposure
+
+    p = ctx.portfolio()
+    ins = p.find_instrument(a.instrument)
+    if ins is None:
+        raise ToolError(f"unknown instrument {a.instrument!r}")
+    if not a.countries and not a.sectors:
+        raise ToolError("give countries and/or sectors")
+    exp = Exposure(
+        countries=a.countries or {}, sectors=a.sectors or {}, source="user", as_of=date.today()
+    )
+    ctx.exposure_service().cache.put(ins.id, exp)
+    return {"instrument": ins.name, "exposure": exp.model_dump(mode="json")}
+
+
+class RiskArgs(BaseModel):
+    period: str = Field("1y", description="1m, 3m, 6m, ytd, 1y, 3y, 5y or all")
+    benchmark: str | None = Field(None, description="Yahoo symbol; default world equity ETF")
+
+
+async def get_risk(ctx: ChatContext, a: RiskArgs) -> dict[str, Any]:
+    """Risk decomposition of today's holdings from daily history: portfolio volatility,
+    each holding's volatility, share of portfolio variance and beta, correlation matrix."""
+    from pluto.core import analytics as an
+    from pluto.core.risk import risk_report
+
+    p = ctx.portfolio()
+    q = an.current_quantities(p)
+    if len(q) < 2:
+        return {"available": False, "reason": "risk decomposition needs at least two holdings"}
+    today = date.today()
+    start = an.period_start(a.period, today, today - timedelta(days=MAX_LOOKBACK_DAYS))
+    hist = ctx.history_service()
+    instruments = [p.instrument(i) for i in q]
+    try:
+        prices, fx, missing = await hist.for_portfolio(
+            instruments, p.base_currency, start - timedelta(days=10)
+        )
+    except Exception as e:
+        return {
+            "available": False,
+            "reason": f"I was unable to retrieve price history: {type(e).__name__}: {e}",
+        }
+    bench_symbol = a.benchmark or p.benchmark or DEFAULT_BENCHMARK.get(p.base_currency, "VWCE.MI")
+    bench = None
+    try:
+        bench = await hist.symbol_series(bench_symbol, start - timedelta(days=10))
+        if bench.currency != p.base_currency and f"{bench.currency}/{p.base_currency}" not in fx:
+            fxs = await hist.fx_series(bench.currency, p.base_currency, start - timedelta(days=10))
+            if fxs is not None:
+                fx = {**fx, f"{bench.currency}/{p.base_currency}": fxs}
+    except Exception:
+        bench = None
+    # window: from the latest first-date among holdings that reach at least 60% of it
+    dates = an.weekdays(start, today)
+    rep = risk_report(q, p.base_currency, dates, prices, fx, benchmark=bench)
+    if rep is None:
+        firsts = sorted((prices[i].first, i) for i in q if i in prices and prices[i].first)  # type: ignore[type-var]
+        # shrink the window to what most holdings support and retry once
+        if firsts:
+            cut = firsts[len(firsts) // 2][0]
+            if cut and cut > start:
+                dates = an.weekdays(cut, today)
+                rep = risk_report(q, p.base_currency, dates, prices, fx, benchmark=bench)
+    if rep is None:
+        return {
+            "available": False,
+            "reason": "I was unable to retrieve enough price history for at least two holdings "
+            f"over this window (no history for: {', '.join(p.instrument(i).name for i in missing) or 'none missing'})",
+        }
+    pct = lambda x: an.as_decimal(x * 100) if x is not None else None  # noqa: E731
+    return {
+        "available": True,
+        "start": rep.start.isoformat(),
+        "end": rep.end.isoformat(),
+        "days": rep.days,
+        "portfolio_volatility_pct": pct(rep.portfolio_volatility),
+        "diversification_ratio": an.as_decimal(rep.diversification_ratio),
+        "benchmark": {
+            "symbol": bench_symbol,
+            "volatility_pct": pct(rep.benchmark_volatility),
+            "correlation": an.as_decimal(rep.benchmark_correlation),
+        }
+        if bench is not None
+        else None,
+        "holdings": [
+            {
+                "instrument_id": h.instrument_id,
+                "name": p.instrument(h.instrument_id).name,
+                "weight_pct": pct(h.weight),
+                "volatility_pct": pct(h.volatility),
+                "contribution_pct": pct(h.contribution),
+                "beta": an.as_decimal(h.beta),
+            }
+            for h in rep.holdings
+        ],
+        "correlation": {
+            "ids": [h.instrument_id for h in rep.holdings],
+            "names": [p.instrument(h.instrument_id).name for h in rep.holdings],
+            "matrix": [[round(x, 2) for x in row] for row in rep.correlation],
+        },
+        "excluded": [{"instrument_id": i, "name": p.instrument(i).name} for i in rep.excluded],
+        "warnings": rep.warnings,
+    }
+
+
 class AddTransactionArgs(BaseModel):
     type: TxType = Field(description="buy, sell, dividend, fee, deposit or withdrawal")
     instrument: str | None = Field(
@@ -886,6 +1073,25 @@ def default_tools() -> list[ToolSpec]:
             "Performance and risk over a period (1m,3m,6m,ytd,1y,3y,5y,all): time- and money-weighted return, volatility, max drawdown, benchmark comparison, both for the actual history and for today's composition backtested.",
             PerformanceArgs,
             get_performance,
+        ),
+        ToolSpec(
+            "get_exposure",
+            "Look-through allocation by region, country and sector (from ETF holdings data). Reports which holdings lack data and why.",
+            ExposureArgs,
+            get_exposure,
+        ),
+        ToolSpec(
+            "set_exposure",
+            "Store a country/sector breakdown for an instrument by hand when no source provides it.",
+            SetExposureArgs,
+            set_exposure,
+            read_only=False,
+        ),
+        ToolSpec(
+            "get_risk",
+            "Risk decomposition of today's holdings: portfolio volatility, per-holding volatility, contribution to variance, beta, correlation matrix, diversification ratio.",
+            RiskArgs,
+            get_risk,
         ),
         ToolSpec(
             "set_asset_class",

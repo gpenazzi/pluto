@@ -10,6 +10,8 @@ import Transactions from './components/Transactions'
 import Versions from './components/Versions'
 import PortfolioBar from './components/PortfolioBar'
 import Performance from './components/Performance'
+import Exposure from './components/Exposure'
+import Risk from './components/Risk'
 
 const REFRESH_MS = 60_000
 
@@ -69,6 +71,8 @@ export default function App() {
         {valuation && <Allocation valuation={valuation} />}
         {valuation && <Holdings valuation={valuation} />}
         {portfolio && <Performance key={portfolios.current} currency={portfolio.base_currency} refreshKey={refreshKey} />}
+        {portfolio && <Exposure key={'x' + portfolios.current} refreshKey={refreshKey} />}
+        {portfolio && <Risk key={'r' + portfolios.current} refreshKey={refreshKey} />}
         {portfolio && <TransactionForm portfolio={portfolio} onChanged={() => refresh()} />}
         <Transactions transactions={transactions} onChanged={() => refresh()} />
         <Versions head={versions.head} versions={versions.versions} onChanged={() => refresh()} />

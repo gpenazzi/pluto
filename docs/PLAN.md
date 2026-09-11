@@ -159,10 +159,25 @@ before the next starts.
   static backtest of today's composition on total-return prices, per-instrument
   contributions, benchmark with the same cash flows. `get_performance` tool, `pluto perf`,
   `GET /api/performance`, Performance card in the UI (tiles + line chart, composition/actual
-  toggle, period selector). Remaining M6 work: look-through exposure (region/sector) and
-  richer risk (correlations), see Known limits.
+  toggle, period selector).
+- 2026-09-11: M6 part 2. Look-through (`market/exposure.py`): justETF profile page tables
+  (countries + sectors, scraped by data-testid), Yahoo quoteSummary (sector weights for
+  ETFs, country/sector for companies; needs a cookie + crumb session, rate-limited), ISIN
+  prefix as last resort for a company's country. Results cached 30 days in
+  `~/.pluto/cache/exposure.json`; a stale entry is served with the failure reason when a
+  refresh fails. `get_exposure`/`set_exposure` tools, `pluto exposure`, `GET /api/exposure`,
+  Look-through card (region/country/sector bars, unknown holdings with reasons, per-instrument
+  source table). Risk (`core/risk.py`): per-holding volatility, share of variance, beta,
+  correlation matrix, diversification ratio; `get_risk`, `pluto risk`, `GET /api/risk`, Risk
+  card with heatmap. Every analytics response carries `available`/`reason`; the UI shows
+  "X is not available: <reason>" instead of failing. Next: backdating helper, then M7.
 
 ### Known limits to revisit
+
+- Look-through sources are unofficial: justETF HTML (layout may change), Yahoo
+  quoteSummary (crumb, 429s). The code degrades to "not available: <reason>" and keeps the
+  last good data; if a source breaks for good, the parser in `market/exposure.py` is the
+  place to fix. `set_exposure` is the manual escape hatch.
 
 - The composition backtest window is bounded by price history only (up to 15 years);
   holdings whose history does not reach the window are left out and listed with their

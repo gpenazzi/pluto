@@ -390,3 +390,45 @@ async def test_get_performance_excludes_short_history_holdings(
     assert [e["name"] for e in comp["excluded"]] == ["Eni S.p.A."]
     assert comp["excluded"][0]["weight_pct"] is not None and "left out" in comp["note"]
     assert all(c["name"] != "Eni S.p.A." for c in comp["contributions"])
+
+
+@respx.mock
+async def test_exposure_and_risk_report_unavailability_plainly(
+    registry: ToolRegistry, ctx: ChatContext, tmp_path: Path
+):
+    from pluto.market.exposure import ExposureCache, ExposureService
+    from pluto.market.history import HistoryService
+
+    # quotes work (needed for weights), every look-through source is down
+    for sym, px, cur in [
+        ("VWCE.MI", 166, "EUR"),
+        ("CSSPX.MI", 600, "EUR"),
+        ("AGGH.MI", 5, "EUR"),
+        ("AAPL", 200, "USD"),
+        ("MSFT", 500, "USD"),
+        ("ENI.MI", 24, "EUR"),
+        ("USDEUR=X", 0.5, "EUR"),
+    ]:
+        respx.get(CHART_URL.format(symbol=sym), params__contains={"range": "1d"}).mock(
+            return_value=httpx.Response(200, json=chart(px, cur))
+        )
+    respx.get("https://www.justetf.com/en/etf-profile.html").mock(
+        side_effect=httpx.ConnectError("down")
+    )
+    respx.get("https://fc.yahoo.com").mock(side_effect=httpx.ConnectError("down"))
+    ctx.exposure = ExposureService(ctx.quotes.client, ExposureCache(tmp_path / "exp.json"))
+    res = await registry.call("get_exposure", {})
+    assert res.ok
+    # stocks still get a country from their ISIN, so the view is partial, not unavailable
+    assert res.data["available"] is True
+    names_unknown = {u["name"] for u in res.data["unknown"]}
+    assert "Vanguard FTSE All-World UCITS ETF (Acc)" in names_unknown
+    assert any("unreachable" in u["reason"] for u in res.data["unknown"])
+    assert any(r["source"] == "isin" for r in res.data["instruments"])
+
+    # risk: no history at all -> plain reason
+    respx.get(url__regex=r".*/v8/finance/chart/.*").mock(return_value=httpx.Response(500))
+    ctx.history = HistoryService(ctx.quotes.client, tmp_path / "hist")
+    res = await registry.call("get_risk", {"period": "1y"})
+    assert res.ok and res.data["available"] is False
+    assert "unable to retrieve" in res.data["reason"]

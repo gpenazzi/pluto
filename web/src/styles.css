@@ -117,3 +117,11 @@ form.tx .wide { grid-column: span 2; }
 .tile { border: 1px solid var(--grid); border-radius: 8px; padding: 8px 10px; }
 .tile-v { font-size: 20px; font-weight: 600; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
 details summary { cursor: pointer; }
+
+.bars { display: flex; flex-direction: column; gap: 4px; }
+.bar-row { display: grid; grid-template-columns: 180px 1fr 60px; gap: 10px; align-items: center; }
+.bar-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bar-track { height: 14px; background: color-mix(in srgb, var(--ink) 5%, var(--surface)); border-radius: 3px; overflow: hidden; }
+.bar-fill { display: block; height: 100%; background: var(--s1); border-radius: 3px; }
+.bar-fill.unknown { background: var(--other); }
+.bar-v { text-align: right; font-variant-numeric: tabular-nums; }

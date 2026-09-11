@@ -374,6 +374,81 @@ def _pct(v: object) -> str:
 
 
 @app.command()
+def exposure(
+    refresh: bool = typer.Option(False, help="Re-fetch holdings data"),
+    by: str = typer.Option("region", help="region | country | sector"),
+    portfolio: PortfolioOpt = None,
+):
+    """Look-through allocation from ETF holdings data."""
+    d = _tool(portfolio, "get_exposure", {"refresh": refresh})
+    if not d.get("available"):
+        err.print(f"Not available: {d.get('reason')}")
+        raise typer.Exit(1)
+    t = Table(title=f"Look-through by {by} · {d['covered_pct']}% of the portfolio covered")
+    t.add_column(by.capitalize())
+    t.add_column("Weight", justify="right")
+    for row in d[f"by_{by}"]:
+        t.add_row(row["label"], f"{row['weight_pct']:.1f}%")
+    console.print(t)
+    for u in d["unknown"]:
+        console.print(f"[yellow]{u['name']} ({u['weight_pct']}%): {u['reason']}[/]")
+    for n in d["notes"]:
+        console.print(f"[dim]{n}[/]")
+    it = Table(title="Per instrument")
+    for col in ("Instrument", "Weight", "Source", "As of", "Top countries", "Note"):
+        it.add_column(col)
+    for r in d["instruments"]:
+        it.add_row(
+            r["name"][:40],
+            f"{r['weight_pct']}%",
+            r["source"] or "-",
+            r["as_of"] or "-",
+            ", ".join(f"{k} {v:.0f}%" for k, v in list(r["countries"].items())[:3]),
+            (r["note"] or "")[:50],
+        )
+    console.print(it)
+
+
+@app.command()
+def risk(
+    period: str = typer.Option("1y", help="1m, 3m, 6m, ytd, 1y, 3y, 5y, all"),
+    benchmark: str | None = None,
+    portfolio: PortfolioOpt = None,
+):
+    """Risk decomposition of today's holdings."""
+    d = _tool(portfolio, "get_risk", {"period": period, "benchmark": benchmark})
+    if not d.get("available"):
+        err.print(f"Not available: {d.get('reason')}")
+        raise typer.Exit(1)
+    console.print(
+        f"[bold]{d['start']} → {d['end']}[/] · portfolio volatility "
+        f"{d['portfolio_volatility_pct']}% · diversification ratio {d['diversification_ratio']}"
+    )
+    if d["benchmark"]:
+        b = d["benchmark"]
+        console.print(
+            f"Benchmark {b['symbol']}: volatility {b['volatility_pct']}%, "
+            f"correlation {b['correlation']}"
+        )
+    t = Table(title="Holdings")
+    for col in ("Instrument", "Weight", "Volatility", "Risk contribution", "Beta"):
+        t.add_column(col, justify="right" if col != "Instrument" else "left")
+    for h in d["holdings"]:
+        t.add_row(
+            h["name"][:45],
+            f"{h['weight_pct']}%",
+            f"{h['volatility_pct']}%",
+            f"{h['contribution_pct']}%",
+            str(h["beta"] if h["beta"] is not None else "-"),
+        )
+    console.print(t)
+    for w in d["warnings"]:
+        console.print(f"[yellow]{w}[/]")
+    for e in d["excluded"]:
+        console.print(f"[dim]excluded: {e['name']}[/]")
+
+
+@app.command()
 def classify(
     instrument: Annotated[str, typer.Argument(help="ISIN, symbol or id")],
     asset_class: Annotated[

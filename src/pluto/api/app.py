@@ -193,6 +193,14 @@ def create_app(
     async def performance(period: str = "1y", benchmark: str | None = None) -> Any:
         return await call("get_performance", {"period": period, "benchmark": benchmark})
 
+    @app.get("/api/exposure")
+    async def exposure(refresh: bool = False) -> Any:
+        return await call("get_exposure", {"refresh": refresh})
+
+    @app.get("/api/risk")
+    async def risk(period: str = "1y", benchmark: str | None = None) -> Any:
+        return await call("get_risk", {"period": period, "benchmark": benchmark})
+
     @app.get("/api/transactions")
     async def transactions(last: int = 100, instrument: str | None = None) -> Any:
         return await call("list_transactions", {"last": last, "instrument": instrument})

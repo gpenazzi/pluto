@@ -105,3 +105,34 @@ export interface PortfolioSummary {
   instruments: number
   transactions: number
 }
+
+export interface PerfMetrics {
+  start: string
+  end: string
+  start_value: string
+  end_value: string
+  net_flows: string
+  gain: string
+  twr_pct: string | null
+  twr_annualized_pct: string | null
+  mwr_annualized_pct: string | null
+  volatility_pct: string | null
+  max_drawdown_pct: string | null
+  drawdown_from: string | null
+  drawdown_to: string | null
+  series: [string, number, number | null][]
+  note?: string
+  days?: number
+  contributions?: { instrument_id: string; name: string; gain: string; weight_pct: string }[]
+  excluded?: { instrument_id: string; name: string; history_from: string | null; weight_pct: string | null }[]
+  missing?: string[]
+}
+
+export interface Performance {
+  period: string
+  base_currency: string
+  actual: PerfMetrics
+  composition: PerfMetrics
+  benchmark: { symbol: string; currency: string; twr: string | null } | null
+  missing_history: string[]
+}

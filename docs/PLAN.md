@@ -150,9 +150,29 @@ before the next starts.
   an index/equity word, new classes money_market and multi_asset, fallback "other".
   `set_asset_class` / `pluto classify` set a class explicitly (flag
   `asset_class_confirmed`, never overwritten); `reclassify` / `pluto reclassify` re-guess the
-  rest. Next: M6 (analytics).
+  rest.
+- 2026-09-11: M6 first slice (performance & risk). `market/history.py`: daily history
+  (close + adjusted close) from Yahoo with an on-disk cache under `~/.pluto/cache/history`,
+  incremental refresh, listing fallback, FX history. `core/analytics.py`: value series from
+  transactions, external flows (deposits when cash is tracked, else buys/sells/dividends),
+  time-weighted index with a baseline day, money-weighted (XIRR), volatility, max drawdown,
+  static backtest of today's composition on total-return prices, per-instrument
+  contributions, benchmark with the same cash flows. `get_performance` tool, `pluto perf`,
+  `GET /api/performance`, Performance card in the UI (tiles + line chart, composition/actual
+  toggle, period selector). Remaining M6 work: look-through exposure (region/sector) and
+  richer risk (correlations), see Known limits.
 
 ### Known limits to revisit
+
+- The composition backtest window is bounded by price history only (up to 15 years);
+  holdings whose history does not reach the window are left out and listed with their
+  weight (thin Yahoo listings such as G3TA.F hold a single bar). The history service
+  prefers the listing with the longest history when the preferred one is short.
+- Analytics need ~1 year of transaction history to be meaningful in the "actual" view. For a
+  portfolio recorded at its current state, the "composition" view is the useful one. Users
+  can backdate transactions to get a real history.
+- Composition backtest uses Yahoo adjusted closes (dividends reinvested); "actual" uses raw
+  closes plus recorded dividends. The two are not directly comparable for distributing funds.
 
 - Name-only resolution depends on Yahoo's literal search plus OpenFIGI's fuzzy search;
   "Vanguard All World" does not surface VWCE, "Vanguard FTSE All-World" does. The chat

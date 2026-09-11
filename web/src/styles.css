@@ -112,3 +112,8 @@ form.tx .wide { grid-column: span 2; }
 .resolve ul { margin: 6px 0; padding-left: 0; list-style: none; }
 .resolve li { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 4px 0; }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 10px; }
+.tile { border: 1px solid var(--grid); border-radius: 8px; padding: 8px 10px; }
+.tile-v { font-size: 20px; font-weight: 600; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+details summary { cursor: pointer; }

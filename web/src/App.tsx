@@ -9,6 +9,7 @@ import TransactionForm from './components/TransactionForm'
 import Transactions from './components/Transactions'
 import Versions from './components/Versions'
 import PortfolioBar from './components/PortfolioBar'
+import Performance from './components/Performance'
 
 const REFRESH_MS = 60_000
 
@@ -20,6 +21,7 @@ export default function App() {
   const [portfolios, setPortfolios] = useState<{ current: string; portfolios: PortfolioSummary[] }>({ current: '', portfolios: [] })
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [refreshKey, setRefreshKey] = useState(0)
 
   const refresh = useCallback(async (force = false) => {
     try {
@@ -27,6 +29,7 @@ export default function App() {
       setPortfolio(p); setTransactions(t.transactions); setVersions(v); setPortfolios(ps)
       setValuation(await api.valuation(force))
       setError(null)
+      setRefreshKey((k) => k + 1)
     } catch (e) {
       setError(String((e as Error).message))
     } finally {
@@ -65,6 +68,7 @@ export default function App() {
         {error && <div className="error">{error}</div>}
         {valuation && <Allocation valuation={valuation} />}
         {valuation && <Holdings valuation={valuation} />}
+        {portfolio && <Performance key={portfolios.current} currency={portfolio.base_currency} refreshKey={refreshKey} />}
         {portfolio && <TransactionForm portfolio={portfolio} onChanged={() => refresh()} />}
         <Transactions transactions={transactions} onChanged={() => refresh()} />
         <Versions head={versions.head} versions={versions.versions} onChanged={() => refresh()} />

@@ -319,3 +319,74 @@ async def test_set_asset_class_and_reclassify(registry: ToolRegistry, ctx: ChatC
     )
     res = await registry.call("reclassify", {})
     assert res.ok and res.data["changed"] == [] and res.data["version"] is None
+
+
+@respx.mock
+async def test_get_performance_tool(registry: ToolRegistry, ctx: ChatContext, tmp_path: Path):
+    from datetime import date, timedelta
+
+    from pluto.market.history import HistoryService
+    from tests.test_history import chart_history
+
+    ctx.history = HistoryService(ctx.quotes.client, tmp_path / "hist")
+    start = date.today() - timedelta(days=400)
+    n = 401
+    for sym in ("VWCE.MI", "CSSPX.MI", "AGGH.MI", "AAPL", "MSFT", "ENI.MI", "USDEUR=X"):
+        cur = "USD" if sym in ("AAPL", "MSFT") else "EUR"
+        closes: list[float | None] = [
+            1.0 if sym == "USDEUR=X" else 100.0 + i * 0.1 for i in range(n)
+        ]
+        respx.get(CHART_URL.format(symbol=sym)).mock(
+            return_value=httpx.Response(200, json=chart_history(start, closes, cur))
+        )
+    respx.get(url__regex=r".*/v8/finance/chart/.*").mock(return_value=httpx.Response(404))
+    res = await registry.call("get_performance", {"period": "1y"})
+    assert res.ok, res.data
+    d = res.data
+    assert d["benchmark"]["symbol"] == "VWCE.MI" and d["missing_history"] == []
+    actual, comp = d["actual"], d["composition"]
+    assert actual["end"] == date.today().isoformat() and len(actual["series"]) > 100
+    assert actual["twr_pct"] is not None and actual["volatility_pct"] is not None
+    assert comp["twr_pct"] is not None and comp["max_drawdown_pct"] is not None
+    assert comp["contributions"] and comp["contributions"][0]["name"]
+    assert all(row[2] is not None for row in comp["series"])  # benchmark line present
+    res = await registry.call("get_performance", {"period": "2w"})
+    assert not res.ok
+    # composition "all": bounded by price history, not by the (recent) transactions
+    res = await registry.call("get_performance", {"period": "all"})
+    assert res.ok, res.data
+    comp = res.data["composition"]
+    assert comp["start"] < (date.today() - timedelta(days=380)).isoformat()
+    assert "excluded" not in comp  # all holdings are short: the window shrinks instead
+    assert "no earlier price history" in comp["note"]
+
+
+@respx.mock
+async def test_get_performance_excludes_short_history_holdings(
+    registry: ToolRegistry, ctx: ChatContext, tmp_path: Path
+):
+    from datetime import date, timedelta
+
+    from pluto.market.history import HistoryService
+    from tests.test_history import chart_history
+
+    ctx.history = HistoryService(ctx.quotes.client, tmp_path / "hist")
+    start = date.today() - timedelta(days=400)
+    for sym in ("VWCE.MI", "CSSPX.MI", "AGGH.MI", "AAPL", "MSFT", "USDEUR=X"):
+        cur = "USD" if sym in ("AAPL", "MSFT") else "EUR"
+        closes: list[float | None] = [1.0 if sym == "USDEUR=X" else 100.0] * 401
+        respx.get(CHART_URL.format(symbol=sym)).mock(
+            return_value=httpx.Response(200, json=chart_history(start, closes, cur))
+        )
+    # Eni: a single bar today, like a thin listing
+    respx.get(CHART_URL.format(symbol="ENI.MI")).mock(
+        return_value=httpx.Response(200, json=chart_history(date.today(), [24.0], "EUR"))
+    )
+    respx.get(url__regex=r".*/v8/finance/chart/.*").mock(return_value=httpx.Response(404))
+    res = await registry.call("get_performance", {"period": "1y"})
+    assert res.ok, res.data
+    comp = res.data["composition"]
+    assert comp["start"] < (date.today() - timedelta(days=360)).isoformat()  # window kept
+    assert [e["name"] for e in comp["excluded"]] == ["Eni S.p.A."]
+    assert comp["excluded"][0]["weight_pct"] is not None and "left out" in comp["note"]
+    assert all(c["name"] != "Eni S.p.A." for c in comp["contributions"])

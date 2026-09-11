@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from pluto.core.holdings import compute_holdings
 from pluto.core.model import AssetClass, Portfolio, PortfolioError, Transaction, TxType
+from pluto.market.history import HistoryService, default_history_dir
 from pluto.market.resolver import InstrumentResolver, ResolvedInstrument, is_isin
 from pluto.market.service import QuoteService, make_service
 from pluto.store.versions import StoreError, VersionStore
@@ -34,12 +35,23 @@ class ChatContext:
     store: VersionStore
     quotes: QuoteService
     resolver: InstrumentResolver
+    history: HistoryService | None = None
     source: str = "chat"
 
     @classmethod
     def create(cls, store: VersionStore, client: httpx.AsyncClient | None = None) -> ChatContext:
         svc = make_service(client)
-        return cls(store=store, quotes=svc, resolver=InstrumentResolver(svc.client))
+        return cls(
+            store=store,
+            quotes=svc,
+            resolver=InstrumentResolver(svc.client),
+            history=HistoryService(svc.client, default_history_dir()),
+        )
+
+    def history_service(self) -> HistoryService:
+        if self.history is None:
+            self.history = HistoryService(self.quotes.client, None)
+        return self.history
 
     def portfolio(self) -> Portfolio:
         return self.store.load()
@@ -440,6 +452,245 @@ async def reclassify(ctx: ChatContext, _: NoArgs) -> dict[str, Any]:
     }
 
 
+DEFAULT_BENCHMARK = {"EUR": "VWCE.MI", "USD": "VT", "GBP": "VWRP.L", "CHF": "VWRL.SW"}
+MAX_POINTS = 300
+MAX_LOOKBACK_DAYS = 15 * 365  # "all" for the composition view
+MAX_EXCLUDED_WEIGHT = 0.25  # backtest may leave out short-history holdings up to this share
+
+
+class PerformanceArgs(BaseModel):
+    period: str = Field("1y", description="1m, 3m, 6m, ytd, 1y, 3y, 5y or all")
+    benchmark: str | None = Field(
+        None,
+        description="Yahoo symbol to compare with; default is a world equity ETF in the base currency",
+    )
+
+
+async def get_performance(ctx: ChatContext, a: PerformanceArgs) -> dict[str, Any]:
+    """Performance and risk over a window: actual history (from transactions) and a backtest
+    of today's composition, each against a benchmark invested the same way."""
+    from pluto.core import analytics as an
+
+    p = ctx.portfolio()
+    if not p.transactions:
+        raise ToolError("no transactions yet")
+    today = date.today()
+    earliest = min(t.date for t in p.transactions)
+    start = an.period_start(a.period, today, earliest)
+    # the composition backtest is bounded by price history only, not by the transactions
+    lookback = an.period_start(a.period, today, today - timedelta(days=MAX_LOOKBACK_DAYS))
+    fetch_from = min(start, lookback) - timedelta(days=10)
+    hist = ctx.history_service()
+    q = an.current_quantities(p)
+    held_ids = set(q) | {t.instrument_id for t in p.transactions if t.instrument_id}
+    instruments = [p.instrument(i) for i in held_ids if i in p.instruments]
+    prices, fx, missing = await hist.for_portfolio(instruments, p.base_currency, fetch_from)
+    bench_symbol = a.benchmark or p.benchmark or DEFAULT_BENCHMARK.get(p.base_currency, "VWCE.MI")
+    bench = None
+    try:
+        bench = await hist.symbol_series(bench_symbol, fetch_from)
+    except Exception:
+        bench = None
+    if (
+        bench is not None
+        and bench.currency != p.base_currency
+        and f"{bench.currency}/{p.base_currency}" not in fx
+    ):
+        fxs = await hist.fx_series(bench.currency, p.base_currency, fetch_from)
+        if fxs is not None:
+            fx = {**fx, f"{bench.currency}/{p.base_currency}": fxs}
+    # Holdings whose history does not reach the window are left out of the backtest, but
+    # only while they add up to a small share of the portfolio (a thin listing with a few
+    # bars must not shrink the window for everything else). Beyond that share the window
+    # shrinks to what the remaining holdings support.
+    grace = lookback + timedelta(days=30)
+    weights = _current_weights(p, q, prices, fx, today)
+    q_comp: dict[str, float] = {}
+    excluded: list[dict[str, Any]] = []
+    left_out = 0.0
+    with_history = []
+    for ins_id in q:
+        ps = prices.get(ins_id)
+        if ps is None or ps.first is None:
+            excluded.append(
+                {
+                    "instrument_id": ins_id,
+                    "name": p.instrument(ins_id).name,
+                    "history_from": None,
+                    "weight_pct": an.as_decimal(weights.get(ins_id, 0.0) * 100, 1),
+                }
+            )
+            left_out += weights.get(ins_id, 0.0)
+        else:
+            with_history.append((ps.first, ins_id))
+    ordered = sorted(with_history, reverse=True)  # shortest history first
+    for k, (first, ins_id) in enumerate(ordered):
+        w = weights.get(ins_id, 0.0)
+        rest_max = ordered[k + 1][0] if k + 1 < len(ordered) else None
+        # leaving this one out only helps if it actually extends the window
+        helps = rest_max is not None and first > rest_max
+        if first > grace and helps and left_out + w <= MAX_EXCLUDED_WEIGHT:
+            excluded.append(
+                {
+                    "instrument_id": ins_id,
+                    "name": p.instrument(ins_id).name,
+                    "history_from": first.isoformat(),
+                    "weight_pct": an.as_decimal(w * 100, 1),
+                }
+            )
+            left_out += w
+        else:
+            for _, rest_id in ordered[k:]:
+                q_comp[rest_id] = q[rest_id]
+            break
+    comp_start = max([lookback, *[f for f, i in with_history if i in q_comp]])
+    limiter = next((i for f, i in with_history if i in q_comp and f == comp_start), None)
+
+    # actual history; the first date is the baseline day, whose value is the start value
+    dates = [an.baseline(start), *an.weekdays(start, today)]
+    actual_vs = an.value_series(p, dates, prices, fx)
+    actual = _metrics_dict(an.metrics(actual_vs))
+    actual_bench = an.benchmark_series(bench, actual_vs, p.base_currency, fx) if bench else None
+    actual["series"] = _downsample(actual_vs.dates, actual_vs.values, actual_bench)
+    actual["days"] = len(dates) - 1
+    if (today - earliest).days < 30:
+        actual["note"] = (
+            f"only {(today - earliest).days} days since the first recorded transaction; "
+            "the composition view shows how today's holdings behaved historically"
+        )
+
+    # composition backtest
+    c_dates = [an.baseline(comp_start), *an.weekdays(comp_start, today)]
+    comp_vs = an.composition_series(q_comp, p.base_currency, c_dates, prices, fx)
+    comp = _metrics_dict(an.metrics(comp_vs))
+    notes = []
+    if comp_start > lookback and limiter is not None:
+        notes.append(
+            f"window starts {comp_start.isoformat()}: {p.instrument(limiter).name} has no "
+            "earlier price history"
+        )
+    if excluded:
+        comp["excluded"] = excluded
+        notes.append(
+            f"{len(excluded)} holding(s) worth {left_out * 100:.1f}% of the portfolio have no "
+            f"price history back to {comp_start.isoformat()} and are left out of this backtest"
+        )
+    if notes:
+        comp["note"] = "; ".join(notes)
+    comp_bench = None
+    if bench is not None and comp_vs.values and comp_vs.values[0] > 0:
+        b0 = an.convert(
+            bench.at(c_dates[0], adjusted=True) or 0.0,
+            bench.currency,
+            p.base_currency,
+            fx,
+            c_dates[0],
+        )
+        if b0:
+            scale = comp_vs.values[0] / b0
+            comp_bench = []
+            for d in c_dates:
+                bp = bench.at(d, adjusted=True)
+                bv = (
+                    an.convert(bp, bench.currency, p.base_currency, fx, d)
+                    if bp is not None
+                    else None
+                )
+                comp_bench.append(
+                    bv * scale
+                    if bv is not None
+                    else (comp_bench[-1] if comp_bench else comp_vs.values[0])
+                )
+    comp["series"] = _downsample(comp_vs.dates, comp_vs.values, comp_bench)
+    comp["contributions"] = [
+        {
+            "instrument_id": i,
+            "name": p.instrument(i).name,
+            "gain": an.as_decimal(g),
+            "weight_pct": an.as_decimal(w * 100, 1),
+        }
+        for i, g, w in an.contributions(
+            q_comp, p.base_currency, c_dates[0], c_dates[-1], prices, fx
+        )
+    ]
+    comp["missing"] = sorted(comp_vs.missing)
+
+    bench_out = None
+    if bench is not None:
+        b_idx = [bench.at(d, adjusted=True) for d in c_dates]
+        vals = [x for x in b_idx if x is not None]
+        bench_out = {
+            "symbol": bench_symbol,
+            "currency": bench.currency,
+            "twr": an.as_decimal((vals[-1] / vals[0] - 1) * 100)
+            if len(vals) > 1 and vals[0]
+            else None,
+        }
+    return {
+        "period": a.period,
+        "base_currency": p.base_currency,
+        "actual": actual,
+        "composition": comp,
+        "benchmark": bench_out,
+        "missing_history": sorted(set(missing) | actual_vs.missing),
+    }
+
+
+def _current_weights(
+    p: Portfolio, q: dict[str, float], prices: Any, fx: Any, today: date
+) -> dict[str, float]:
+    from pluto.core import analytics as an
+
+    vals: dict[str, float] = {}
+    for ins_id, qty in q.items():
+        ps = prices.get(ins_id)
+        px = ps.at(today) if ps else None
+        v = (
+            an.convert(qty * px, ps.currency, p.base_currency, fx, today)
+            if (ps and px is not None)
+            else None
+        )
+        if v is not None:
+            vals[ins_id] = v
+    total = sum(vals.values())
+    return {k: v / total for k, v in vals.items()} if total else {}
+
+
+def _metrics_dict(m: Any) -> dict[str, Any]:
+    from pluto.core.analytics import as_decimal as dec
+
+    pct = lambda x: dec(x * 100) if x is not None else None  # noqa: E731
+    return {
+        "start": m.start.isoformat(),
+        "end": m.end.isoformat(),
+        "start_value": dec(m.start_value),
+        "end_value": dec(m.end_value),
+        "net_flows": dec(m.net_flows),
+        "gain": dec(m.gain),
+        "twr_pct": pct(m.twr),
+        "twr_annualized_pct": pct(m.twr_annualized),
+        "mwr_annualized_pct": pct(m.mwr),
+        "volatility_pct": pct(m.volatility),
+        "max_drawdown_pct": pct(m.max_drawdown),
+        "drawdown_from": m.drawdown_from.isoformat() if m.drawdown_from else None,
+        "drawdown_to": m.drawdown_to.isoformat() if m.drawdown_to else None,
+    }
+
+
+def _downsample(
+    dates: list[date], values: list[float], bench: list[float] | None
+) -> list[list[Any]]:
+    n = len(dates)
+    step = max(1, -(-n // MAX_POINTS))
+    idx = list(range(0, n, step))
+    if n and idx[-1] != n - 1:
+        idx.append(n - 1)
+    return [
+        [dates[i].isoformat(), round(values[i], 2), round(bench[i], 2) if bench else None]
+        for i in idx
+    ]
+
+
 class AddTransactionArgs(BaseModel):
     type: TxType = Field(description="buy, sell, dividend, fee, deposit or withdrawal")
     instrument: str | None = Field(
@@ -629,6 +880,12 @@ def default_tools() -> list[ToolSpec]:
             AddInstrumentArgs,
             add_instrument,
             read_only=False,
+        ),
+        ToolSpec(
+            "get_performance",
+            "Performance and risk over a period (1m,3m,6m,ytd,1y,3y,5y,all): time- and money-weighted return, volatility, max drawdown, benchmark comparison, both for the actual history and for today's composition backtested.",
+            PerformanceArgs,
+            get_performance,
         ),
         ToolSpec(
             "set_asset_class",

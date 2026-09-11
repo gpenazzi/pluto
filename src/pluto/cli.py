@@ -319,6 +319,61 @@ def _tool(portfolio: str | None, name: str, args: dict[str, object]):
 
 
 @app.command()
+def perf(
+    period: str = typer.Option("1y", help="1m, 3m, 6m, ytd, 1y, 3y, 5y, all"),
+    benchmark: str | None = typer.Option(None, help="Yahoo symbol, default world equity ETF"),
+    portfolio: PortfolioOpt = None,
+):
+    """Performance and risk: actual history and today's composition backtested."""
+    d = _tool(portfolio, "get_performance", {"period": period, "benchmark": benchmark})
+    ccy = d["base_currency"]
+
+    def block(title: str, m: dict) -> None:
+        t = Table(title=f"{title} · {m['start']} → {m['end']}")
+        t.add_column("Metric")
+        t.add_column("Value", justify="right")
+        rows = [
+            ("Start value", f"{fmt(Decimal(m['start_value']))} {ccy}"),
+            ("End value", f"{fmt(Decimal(m['end_value']))} {ccy}"),
+            ("Net flows", f"{fmt(Decimal(m['net_flows']))} {ccy}"),
+            ("Gain", f"{fmt(Decimal(m['gain']))} {ccy}"),
+            ("Time-weighted return", _pct(m["twr_pct"])),
+            ("  annualized", _pct(m["twr_annualized_pct"])),
+            ("Money-weighted (annualized)", _pct(m["mwr_annualized_pct"])),
+            ("Volatility (annualized)", _pct(m["volatility_pct"])),
+            (
+                "Max drawdown",
+                f"{_pct(m['max_drawdown_pct'])}  {m['drawdown_from'] or ''}"
+                f" → {m['drawdown_to'] or ''}",
+            ),
+        ]
+        for k, v in rows:
+            t.add_row(k, v)
+        console.print(t)
+        if m.get("note"):
+            console.print(f"[yellow]{m['note']}[/]")
+
+    block("Actual", d["actual"])
+    block("Today's composition, backtested", d["composition"])
+    if d["benchmark"]:
+        b = d["benchmark"]
+        console.print(f"Benchmark {b['symbol']}: {_pct(b['twr'])} over the same window")
+    ct = Table(title="Contribution (composition, total return)")
+    ct.add_column("Instrument")
+    ct.add_column("Gain", justify="right")
+    ct.add_column("Weight", justify="right")
+    for c in d["composition"]["contributions"]:
+        ct.add_row(c["name"][:50], f"{fmt(Decimal(c['gain']))} {ccy}", f"{c['weight_pct']}%")
+    console.print(ct)
+    if d["missing_history"]:
+        console.print(f"[red]No price history for: {', '.join(d['missing_history'])}[/]")
+
+
+def _pct(v: object) -> str:
+    return "n/a" if v is None else f"{Decimal(str(v)):+.2f}%"
+
+
+@app.command()
 def classify(
     instrument: Annotated[str, typer.Argument(help="ISIN, symbol or id")],
     asset_class: Annotated[

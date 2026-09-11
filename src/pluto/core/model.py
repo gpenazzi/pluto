@@ -152,6 +152,7 @@ class Portfolio(BaseModel):
     # None = automatic: cash is tracked once a deposit or withdrawal has been recorded.
     # Many people only record holdings; for them cash would just go negative with every buy.
     track_cash: bool | None = None
+    benchmark: str | None = None  # Yahoo symbol to compare against; None = default for base ccy
 
     def tracks_cash(self) -> bool:
         if self.track_cash is not None:

@@ -6,7 +6,7 @@ currency, regularMarketTime, previousClose. `/v7/finance/quote` needs a crumb an
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -125,3 +125,43 @@ class YahooProvider:
                 )
             )
         return out
+
+
+async def yahoo_history(
+    client: httpx.AsyncClient, symbol: str, start: date, end: date | None = None
+) -> tuple[str, list[tuple[date, float, float]]]:
+    """Daily bars (date, close, adjclose) for symbol from start to end. Returns the currency
+    too. Bars with no close (holidays reported as null) are dropped."""
+    from datetime import datetime as _dt
+    from datetime import time as _time
+
+    end = end or date.today()
+    p1 = int(_dt.combine(start, _time(), tzinfo=UTC).timestamp())
+    p2 = int(_dt.combine(end + timedelta(days=1), _time(), tzinfo=UTC).timestamp())
+    url = CHART_URL.format(symbol=symbol)
+    try:
+        data = await get_json(
+            client, url, params={"period1": p1, "period2": p2, "interval": "1d"}, headers=HEADERS
+        )
+    except ProviderError as e:
+        if getattr(e, "status", None) == 404:
+            raise NoQuote(f"yahoo: no history for {symbol}") from None
+        raise
+    chart = data.get("chart") or {}
+    if chart.get("error") or not chart.get("result"):
+        raise NoQuote(f"yahoo: {symbol}: {chart.get('error') or 'empty result'}")
+    r = chart["result"][0]
+    meta = r.get("meta") or {}
+    ts = r.get("timestamp") or []
+    quote = ((r.get("indicators") or {}).get("quote") or [{}])[0]
+    closes = quote.get("close") or []
+    adj = (((r.get("indicators") or {}).get("adjclose") or [{}])[0]).get("adjclose") or closes
+    _, currency = _normalise(Decimal(1), meta.get("currency") or "?")
+    factor = 0.01 if meta.get("currency") in ("GBp", "GBX", "ZAc", "ILA") else 1.0
+    bars: list[tuple[date, float, float]] = []
+    for t, c, a in zip(ts, closes, adj, strict=False):
+        if c is None:
+            continue
+        d = datetime.fromtimestamp(t, tz=UTC).date()
+        bars.append((d, float(c) * factor, float(a if a is not None else c) * factor))
+    return currency, bars

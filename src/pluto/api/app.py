@@ -189,6 +189,10 @@ def create_app(
         ]
         return data
 
+    @app.get("/api/performance")
+    async def performance(period: str = "1y", benchmark: str | None = None) -> Any:
+        return await call("get_performance", {"period": period, "benchmark": benchmark})
+
     @app.get("/api/transactions")
     async def transactions(last: int = 100, instrument: str | None = None) -> Any:
         return await call("list_transactions", {"last": last, "instrument": instrument})

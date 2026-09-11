@@ -19,7 +19,7 @@ import httpx
 from pydantic import BaseModel, Field, ValidationError
 
 from pluto.core.holdings import compute_holdings
-from pluto.core.model import Portfolio, PortfolioError, Transaction, TxType
+from pluto.core.model import AssetClass, Portfolio, PortfolioError, Transaction, TxType
 from pluto.market.resolver import InstrumentResolver, ResolvedInstrument, is_isin
 from pluto.market.service import QuoteService, make_service
 from pluto.store.versions import StoreError, VersionStore
@@ -138,6 +138,7 @@ def _instrument_summary(p: Portfolio, ins_id: str) -> dict[str, Any]:
         "isin": ins.isin,
         "type": ins.asset_type.value,
         "asset_class": ins.asset_class.value,
+        "asset_class_confirmed": ins.asset_class_confirmed,
         "currency": ins.currency,
         "symbols": ins.symbols_in_order(),
     }
@@ -205,7 +206,10 @@ async def get_portfolio(ctx: ChatContext, _: NoArgs) -> dict[str, Any]:
             }
             for pos in h.open_positions()
         ],
-        "cash": {k: v.quantize(Decimal("0.01")) for k, v in h.cash.items() if v},
+        "cash_tracked": p.tracks_cash(),
+        "cash": {k: v.quantize(Decimal("0.01")) for k, v in h.cash.items() if v}
+        if p.tracks_cash()
+        else {},
         "transactions_count": len(p.transactions),
     }
 
@@ -262,6 +266,8 @@ async def get_valuation(ctx: ChatContext, a: ValuationArgs) -> dict[str, Any]:
         },
         "missing_prices": v.missing,
         "stale_prices": v.stale,
+        "cash_tracked": v.cash_tracked,
+        "warnings": v.warnings,
     }
 
 
@@ -338,6 +344,100 @@ async def add_instrument(ctx: ChatContext, a: AddInstrumentArgs) -> dict[str, An
     ins = p.add_instrument(u.to_instrument())
     info = ctx.store.commit(p, f"Add instrument {ins.name}")
     return {"added": True, "instrument": _instrument_summary(p, ins.id), "version": info.version}
+
+
+class SetListingArgs(BaseModel):
+    instrument: str = Field(description="ISIN, symbol or id of an instrument in the portfolio")
+    symbol: str = Field(description="Yahoo symbol to quote from, e.g. SNPS or VWCE.MI")
+
+
+async def set_instrument_listing(ctx: ChatContext, a: SetListingArgs) -> dict[str, Any]:
+    """Quote an instrument from another listing (added and verified if unknown). The
+    instrument's own currency and its transactions are untouched; valuation converts."""
+    from pluto.core.model import Listing
+    from pluto.market.types import ProviderError
+
+    p = ctx.portfolio()
+    ins = p.find_instrument(a.instrument)
+    if ins is None:
+        raise ToolError(f"unknown instrument {a.instrument!r}")
+    sym = a.symbol.strip().upper()
+    listing = next((ls for ls in ins.listings if ls.symbol.upper() == sym), None)
+    if listing is None:
+        try:
+            q = await ctx.resolver.yahoo.quote_symbol(sym)
+            meta = await ctx.resolver.yahoo.chart_meta(sym)
+        except ProviderError as e:
+            raise ToolError(f"{sym} returned no price: {e}") from None
+        listing = Listing(symbol=sym, exchange=meta.get("exchangeName") or "?", currency=q.currency)
+        ins.listings.append(listing)
+    ins.preferred_symbol = listing.symbol
+    info = ctx.store.commit(p, f"Quote {ins.name} from {listing.symbol}")
+    q2 = await ctx.quotes.quote(ins, force=True)
+    ctx.quotes.cache.save()
+    return {
+        "instrument": _instrument_summary(p, ins.id),
+        "version": info.version,
+        "quote": {
+            "price": q2.price,
+            "currency": q2.currency,
+            "as_of": q2.as_of.isoformat(timespec="minutes"),
+            "source": q2.source,
+        }
+        if q2
+        else None,
+        "note": (
+            f"prices now come from {listing.symbol} in {listing.currency}; the instrument's "
+            f"transaction currency stays {ins.currency} and values are converted"
+            if listing.currency != ins.currency
+            else None
+        ),
+    }
+
+
+class SetAssetClassArgs(BaseModel):
+    instrument: str = Field(description="ISIN, symbol or id of an instrument in the portfolio")
+    asset_class: AssetClass = Field(
+        description="equity, bond, money_market, commodity, real_estate, multi_asset or other"
+    )
+
+
+async def set_asset_class(ctx: ChatContext, a: SetAssetClassArgs) -> dict[str, Any]:
+    """Set an instrument's asset class explicitly. Guesses from the name never overwrite it."""
+    p = ctx.portfolio()
+    ins = p.find_instrument(a.instrument)
+    if ins is None:
+        raise ToolError(f"unknown instrument {a.instrument!r}")
+    ins.asset_class = a.asset_class
+    ins.asset_class_confirmed = True
+    info = ctx.store.commit(p, f"Classify {ins.name} as {a.asset_class.value}")
+    return {"instrument": _instrument_summary(p, ins.id), "version": info.version}
+
+
+async def reclassify(ctx: ChatContext, _: NoArgs) -> dict[str, Any]:
+    """Re-guess the asset class of every instrument the user has not classified explicitly."""
+    from pluto.market.resolver import guess_asset_class
+
+    p = ctx.portfolio()
+    changes = []
+    for ins in p.instruments.values():
+        if ins.asset_class_confirmed:
+            continue
+        new = guess_asset_class(ins.name, ins.asset_type)
+        if new != ins.asset_class:
+            changes.append({"instrument": ins.name, "from": ins.asset_class.value, "to": new.value})
+            ins.asset_class = new
+    version = (
+        ctx.store.commit(p, f"Reclassify {len(changes)} instruments").version if changes else None
+    )
+    return {
+        "changed": changes,
+        "version": version,
+        "classes": {
+            ins.name: ins.asset_class.value + (" (user)" if ins.asset_class_confirmed else "")
+            for ins in p.instruments.values()
+        },
+    }
 
 
 class AddTransactionArgs(BaseModel):
@@ -528,6 +628,27 @@ def default_tools() -> list[ToolSpec]:
             "Add an instrument to the portfolio by ISIN (preferred) or by a listing symbol chosen from resolve_instrument candidates.",
             AddInstrumentArgs,
             add_instrument,
+            read_only=False,
+        ),
+        ToolSpec(
+            "set_asset_class",
+            "Set an instrument's asset class (equity, bond, money_market, commodity, real_estate, multi_asset, other) when the guessed one is wrong.",
+            SetAssetClassArgs,
+            set_asset_class,
+            read_only=False,
+        ),
+        ToolSpec(
+            "reclassify",
+            "Re-guess asset classes from instrument names for instruments the user has not classified explicitly.",
+            NoArgs,
+            reclassify,
+            read_only=False,
+        ),
+        ToolSpec(
+            "set_instrument_listing",
+            "Quote an instrument from a different listing, e.g. a US company from NASDAQ instead of a European exchange.",
+            SetListingArgs,
+            set_instrument_listing,
             read_only=False,
         ),
         ToolSpec(

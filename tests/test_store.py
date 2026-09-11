@@ -38,3 +38,18 @@ def test_portfolio_dir_uses_pluto_home(pluto_home: Path):
     assert list_portfolios() == ["x"]
     assert default_portfolio() == "x"
     assert str(pluto_home) in str(store.root)
+
+
+def test_delete_portfolio_moves_to_trash_and_keeps_last(pluto_home: Path):
+    from pluto.store.paths import delete_portfolio, write_config
+
+    for n in ("a", "b"):
+        VersionStore(portfolio_dir(n)).commit(Portfolio(name=n), "init")
+    write_config({"portfolio": "a"})
+    dest = delete_portfolio("a")
+    assert dest.parent == pluto_home / "trash" and (dest / "HEAD").exists()
+    assert list_portfolios() == ["b"] and default_portfolio() == "b"
+    with pytest.raises(ValueError, match="last portfolio"):
+        delete_portfolio("b")
+    with pytest.raises(FileNotFoundError):
+        delete_portfolio("zzz")

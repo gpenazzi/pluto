@@ -83,6 +83,22 @@ def use_portfolio(name: str):
     console.print(f"Default portfolio is now [bold]{name}[/]")
 
 
+@app.command()
+def delete(name: str, yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation")):
+    """Move a portfolio to ~/.pluto/trash (nothing is erased)."""
+    if name not in paths.list_portfolios():
+        err.print(f"no portfolio named {name!r}; known: {paths.list_portfolios()}")
+        raise typer.Exit(1)
+    if not yes and not typer.confirm(f"Move portfolio {name!r} to the trash?"):
+        raise typer.Exit(0)
+    try:
+        dest = paths.delete_portfolio(name)
+    except ValueError as e:
+        err.print(str(e))
+        raise typer.Exit(1) from None
+    console.print(f"Moved to {dest}. Default portfolio is now [bold]{paths.default_portfolio()}[/]")
+
+
 @app.command("list")
 def list_cmd():
     """List portfolios."""
@@ -114,8 +130,11 @@ def show(portfolio: PortfolioOpt = None):
             fmt(pos.realized_pnl),
         )
     console.print(t)
-    cash = ", ".join(f"{fmt(v)} {k}" for k, v in h.cash.items() if v)
-    console.print(f"Cash: {cash or '0'}")
+    if p.tracks_cash():
+        cash = ", ".join(f"{fmt(v)} {k}" for k, v in h.cash.items() if v)
+        console.print(f"Cash: {cash or '0'}")
+    else:
+        console.print("[dim]Cash not tracked (record a deposit to start, or `pluto cash on`)[/]")
 
 
 @app.command()
@@ -226,6 +245,107 @@ def remove(tx_id: str, portfolio: PortfolioOpt = None):
         raise typer.Exit(1) from None
     info = store.commit(p, f"Remove {tx.describe()}")
     console.print(f"Removed {tx.id} → version {info.version}")
+
+
+@app.command()
+def cash(
+    mode: Annotated[str, typer.Argument(help="on | off | auto")],
+    portfolio: PortfolioOpt = None,
+):
+    """Whether cash balances are tracked. auto = once a deposit/withdrawal exists."""
+    if mode not in ("on", "off", "auto"):
+        err.print("mode must be on, off or auto")
+        raise typer.Exit(2)
+    store, p = _load(portfolio)
+    p.track_cash = {"on": True, "off": False, "auto": None}[mode]
+    info = store.commit(p, f"Cash tracking {mode}")
+    console.print(
+        f"Cash tracking: {mode} (tracked now: {p.tracks_cash()}) → version {info.version}"
+    )
+
+
+@app.command()
+def listing(
+    instrument: Annotated[str, typer.Argument(help="ISIN, symbol or id")],
+    symbol: Annotated[str, typer.Argument(help="Yahoo symbol to quote from, e.g. SNPS")],
+    portfolio: PortfolioOpt = None,
+):
+    """Quote an instrument from a different listing."""
+    from pluto.chat.tools import ChatContext, ToolRegistry
+
+    store, _ = _load(portfolio)
+    ctx = ChatContext.create(store)
+    ctx.source = "cli"
+
+    async def go():
+        try:
+            args = {"instrument": instrument, "symbol": symbol}
+            return await ToolRegistry(ctx).call("set_instrument_listing", args)
+        finally:
+            await ctx.close()
+
+    res = _run(go())
+    if not res.ok:
+        err.print(str(res.data.get("error")))
+        raise typer.Exit(1)
+    d = res.data
+    q = d.get("quote") or {}
+    console.print(
+        f"{d['instrument']['name']}: quoting from {d['instrument']['symbols'][0]} "
+        f"→ {q.get('price')} {q.get('currency')} ({q.get('source')}) · version {d['version']}"
+    )
+    if d.get("note"):
+        console.print(f"[dim]{d['note']}[/]")
+
+
+def _tool(portfolio: str | None, name: str, args: dict[str, object]):
+    from pluto.chat.tools import ChatContext, ToolRegistry
+
+    store, _ = _load(portfolio)
+    ctx = ChatContext.create(store)
+    ctx.source = "cli"
+
+    async def go():
+        try:
+            return await ToolRegistry(ctx).call(name, args)
+        finally:
+            await ctx.close()
+
+    res = _run(go())
+    if not res.ok:
+        err.print(str(res.data.get("error")))
+        raise typer.Exit(1)
+    return res.data
+
+
+@app.command()
+def classify(
+    instrument: Annotated[str, typer.Argument(help="ISIN, symbol or id")],
+    asset_class: Annotated[
+        str, typer.Argument(help="equity|bond|money_market|commodity|real_estate|multi_asset|other")
+    ],
+    portfolio: PortfolioOpt = None,
+):
+    """Set an instrument's asset class explicitly (never overwritten by guesses)."""
+    d = _tool(portfolio, "set_asset_class", {"instrument": instrument, "asset_class": asset_class})
+    console.print(
+        f"{d['instrument']['name']} → {d['instrument']['asset_class']} · version {d['version']}"
+    )
+
+
+@app.command()
+def reclassify(portfolio: PortfolioOpt = None):
+    """Re-guess asset classes from names for instruments you have not classified yourself."""
+    d = _tool(portfolio, "reclassify", {})
+    for c in d["changed"]:
+        console.print(f"{c['instrument']}: {c['from']} → {c['to']}")
+    suffix = f" · version {d['version']}" if d["version"] else " (no change)"
+    t = Table(title=f"Asset classes{suffix}")
+    t.add_column("Instrument")
+    t.add_column("Class")
+    for name, cls in d["classes"].items():
+        t.add_row(name, cls)
+    console.print(t)
 
 
 @app.command()
@@ -349,6 +469,8 @@ def value(
         f"Cash: {fmt(v.cash_value)} {v.base_currency}   "
         f"[bold]Total: {fmt(v.total_value)} {v.base_currency}[/]"
     )
+    for w in v.warnings:
+        console.print(f"[yellow]{w}[/]")
     if v.missing:
         console.print(f"[red]No price for: {', '.join(v.missing)}[/]")
     if v.stale:

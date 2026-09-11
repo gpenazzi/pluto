@@ -394,7 +394,7 @@ async def test_resolve_exact_symbol_query_is_unique(client):
     res = await InstrumentResolver(client).resolve(query="amzn")
     u = res.unique
     assert u is not None and u.name == "Amazon.com, Inc." and len(res.matches) == 2
-    assert u.preferred_symbol == "AMZ.DE"  # EUR listing still preferred for quoting
+    assert u.preferred_symbol == "AMZN"  # US company: quoted from its home exchange
 
 
 def test_instrument_listing_helper():
@@ -410,3 +410,128 @@ def test_instrument_listing_helper():
         preferred_symbol="B",
     )
     assert ins.symbols_in_order() == ["B", "A"]
+
+
+@respx.mock
+async def test_us_company_prefers_home_exchange_by_name(client):
+    def q(symbol, exchange, name):
+        return {"symbol": symbol, "exchange": exchange, "quoteType": "EQUITY", "longname": name}
+
+    respx.get(SEARCH_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "quotes": [
+                    q("SNPS", "NMS", "Synopsys, Inc."),
+                    q("1SNPS.MI", "MIL", "Synopsys, Inc."),
+                    q("ENI.MI", "MIL", "Eni S.p.A."),
+                    q("E", "NYQ", "Eni S.p.A."),
+                ]
+            },
+        )
+    )
+    respx.post(FIGI_SEARCH_URL).mock(return_value=httpx.Response(200, json={"data": []}))
+    respx.get(CHART_URL.format(symbol="SNPS")).mock(
+        return_value=httpx.Response(
+            200,
+            json=chart(
+                397, "USD", exchangeName="NMS", instrumentType="EQUITY", longName="Synopsys, Inc."
+            ),
+        )
+    )
+    respx.get(CHART_URL.format(symbol="1SNPS.MI")).mock(
+        return_value=httpx.Response(
+            200,
+            json=chart(
+                338, "EUR", exchangeName="MIL", instrumentType="EQUITY", longName="Synopsys, Inc."
+            ),
+        )
+    )
+    respx.get(CHART_URL.format(symbol="ENI.MI")).mock(
+        return_value=httpx.Response(
+            200,
+            json=chart(
+                24, "EUR", exchangeName="MIL", instrumentType="EQUITY", longName="Eni S.p.A."
+            ),
+        )
+    )
+    respx.get(CHART_URL.format(symbol="E")).mock(
+        return_value=httpx.Response(
+            200,
+            json=chart(
+                30, "USD", exchangeName="NYQ", instrumentType="EQUITY", longName="Eni S.p.A."
+            ),
+        )
+    )
+    res = await InstrumentResolver(client).resolve(query="anything")
+    by_name = {m.name: m for m in res.matches}
+    assert by_name["Synopsys, Inc."].preferred_symbol == "SNPS"  # US company: home exchange
+    assert (
+        by_name["Eni S.p.A."].preferred_symbol == "ENI.MI"
+    )  # European company: EUR listing, not the ADR
+
+
+@respx.mock
+async def test_isin_path_us_stock_prefers_us_exchange(client):
+    respx.post(FIGI_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "data": [
+                        figi_row("AAPL", "US", "Common Stock"),
+                        figi_row("APC", "GR", "Common Stock"),
+                    ]
+                }
+            ],
+        )
+    )
+    respx.get(SEARCH_URL).mock(return_value=httpx.Response(200, json={"quotes": []}))
+    respx.get(CHART_URL.format(symbol="AAPL")).mock(
+        return_value=httpx.Response(
+            200,
+            json=chart(
+                315, "USD", exchangeName="NMS", instrumentType="EQUITY", longName="Apple Inc."
+            ),
+        )
+    )
+    respx.get(CHART_URL.format(symbol="APC.DE")).mock(
+        return_value=httpx.Response(
+            200,
+            json=chart(
+                270, "EUR", exchangeName="GER", instrumentType="EQUITY", longName="Apple Inc."
+            ),
+        )
+    )
+    u = (await InstrumentResolver(client).resolve(isin="US0378331005")).unique
+    assert u is not None and u.preferred_symbol == "AAPL" and u.currency == "USD"
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("Xtrackers II EUR Overnight Rate Swap UCITS ETF 1C", "money_market"),
+        ("Xtrackers Portfolio UCITS ETF 1C", "multi_asset"),
+        ("Vanguard LifeStrategy 60% Equity UCITS ETF", "multi_asset"),
+        ("GRUNDBESITZ EUROPA-RC", "real_estate"),
+        ("iShares $ Treasury Bond 0-1yr UCITS ETF USD (Acc)", "bond"),
+        ("iShares € Aggregate Bond ESG SRI UCITS ETF EUR (Dist)", "bond"),
+        ("Xtrackers II EUR Corporate Bond UCITS ETF 1C", "bond"),
+        ("Xetra-Gold", "commodity"),
+        ("iShares Core MSCI World UCITS ETF USD (Acc)", "equity"),
+        ("Vanguard FTSE All-World UCITS ETF", "equity"),
+        ("iShares MSCI Europe Quality Dividend Advanced UCITS ETF EUR (Dist)", "equity"),
+        (
+            "Xtrackers (IE) Public Limited Company - Xtrackers MSCI Emerging Markets UCITS ETF",
+            "equity",
+        ),
+        ("iShares Global Real Estate UCITS ETF", "real_estate"),
+        ("Amundi Prime Global UCITS ETF", "other"),  # no evidence: not silently equity
+    ],
+)
+def test_asset_class_guess(name, expected):
+    assert guess_asset_class(name).value == expected
+
+
+def test_stocks_are_always_equity():
+    assert guess_asset_class("Grundbesitz Holding AG", AssetType.STOCK).value == "equity"

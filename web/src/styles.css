@@ -58,6 +58,8 @@ header.top h1 { font-size: 18px; margin: 0; font-weight: 600; }
 header.top .hero { font-size: 40px; font-weight: 600; letter-spacing: -0.02em; }
 header.top .sub { color: var(--ink-2); }
 header.top .spacer { flex: 1; }
+.pbar { display: inline-flex; gap: 6px; align-items: center; }
+.pbar select { padding: 5px 8px; }
 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
 .card h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;

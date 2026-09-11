@@ -45,3 +45,30 @@ def default_portfolio() -> str:
         return name
     names = list_portfolios()
     return names[0] if names else "main"
+
+
+def trash_dir() -> Path:
+    return home() / "trash"
+
+
+def delete_portfolio(name: str) -> Path:
+    """Move a portfolio out of the way instead of erasing it. Returns the trash location.
+    Refuses to remove the last remaining portfolio."""
+    from datetime import UTC, datetime
+    from shutil import move
+
+    names = list_portfolios()
+    if name not in names:
+        raise FileNotFoundError(f"no portfolio named {name!r}")
+    if len(names) == 1:
+        raise ValueError("cannot delete the last portfolio; create another one first")
+    src = portfolio_dir(name)
+    dest = trash_dir() / f"{name}-{datetime.now(UTC):%Y%m%d-%H%M%S}"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    move(str(src), str(dest))
+    cfg = read_config()
+    if cfg.get("portfolio") == name:
+        remaining = list_portfolios()
+        cfg["portfolio"] = remaining[0]
+        write_config(cfg)
+    return dest

@@ -20,10 +20,11 @@ class AssetType(StrEnum):
 class AssetClass(StrEnum):
     EQUITY = "equity"
     BOND = "bond"
+    MONEY_MARKET = "money_market"
     COMMODITY = "commodity"
     REAL_ESTATE = "real_estate"
-    MIXED = "mixed"
-    OTHER = "other"
+    MULTI_ASSET = "multi_asset"
+    OTHER = "other"  # nothing in the name says what it holds: better honest than "equity"
 
 
 class Listing(BaseModel):
@@ -39,6 +40,7 @@ class Instrument(BaseModel):
     name: str
     asset_type: AssetType
     asset_class: AssetClass = AssetClass.EQUITY
+    asset_class_confirmed: bool = False  # True once the user set it; guesses never overwrite
     isin: str | None = None
     currency: str  # currency of the preferred listing (and of prices in transactions)
     listings: list[Listing] = Field(default_factory=list)
@@ -147,6 +149,14 @@ class Portfolio(BaseModel):
     base_currency: str = "EUR"
     instruments: dict[str, Instrument] = Field(default_factory=dict)
     transactions: list[Transaction] = Field(default_factory=list)
+    # None = automatic: cash is tracked once a deposit or withdrawal has been recorded.
+    # Many people only record holdings; for them cash would just go negative with every buy.
+    track_cash: bool | None = None
+
+    def tracks_cash(self) -> bool:
+        if self.track_cash is not None:
+            return self.track_cash
+        return any(t.type in (TxType.DEPOSIT, TxType.WITHDRAWAL) for t in self.transactions)
 
     # --- instruments -----------------------------------------------------------------
     def instrument(self, instrument_id: str) -> Instrument:

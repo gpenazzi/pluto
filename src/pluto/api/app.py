@@ -20,6 +20,7 @@ from pluto.chat.providers import make_provider
 from pluto.chat.providers.base import ChatEvent, ChatProvider
 from pluto.chat.session import Transcript
 from pluto.chat.tools import ChatContext, ToolRegistry
+from pluto.core.model import Portfolio
 from pluto.store import paths
 from pluto.store.versions import VersionStore
 
@@ -30,18 +31,42 @@ class ChatIn(BaseModel):
     message: str
 
 
+class PortfolioIn(BaseModel):
+    name: str
+    base_currency: str = "EUR"
+
+
 class AppState:
+    """One process, one current portfolio. Switching rebuilds the store, the chat context and
+    the LLM session (its system prompt names the portfolio)."""
+
     def __init__(self, portfolio_name: str, provider_name: str | None, model: str | None):
-        self.portfolio_name = portfolio_name
-        self.store = VersionStore(paths.portfolio_dir(portfolio_name))
-        self.ctx = ChatContext.create(self.store)
-        self.registry = ToolRegistry(self.ctx)
         self.provider_name = provider_name
         self.model = model
         self.provider: ChatProvider | None = None
         self.chat_lock = asyncio.Lock()
+        self.portfolio_name = portfolio_name
+        self.store = VersionStore(paths.portfolio_dir(portfolio_name))
+        self.ctx = ChatContext.create(self.store)
+        self.registry = ToolRegistry(self.ctx)
         self.messages: list[dict[str, Any]] = []  # chat history shown by the UI
         self.transcript = Transcript(portfolio_name)
+
+    async def switch(self, name: str) -> None:
+        if name == self.portfolio_name and self.store.exists():
+            return
+        store = VersionStore(paths.portfolio_dir(name))
+        if not store.exists():
+            raise HTTPException(status_code=404, detail={"error": f"no portfolio {name!r}"})
+        if self.provider is not None:
+            await self.provider.close()
+            self.provider = None
+        self.portfolio_name = name
+        self.store = store
+        self.ctx.store = store  # registry and quote service are shared; only the store changes
+        self.messages = []
+        self.transcript = Transcript(name)
+        paths.write_config({**paths.read_config(), "portfolio": name})
 
     async def get_provider(self) -> ChatProvider:
         if self.provider is None:
@@ -60,6 +85,18 @@ class AppState:
         if self.provider is not None:
             await self.provider.close()
         await self.ctx.close()
+
+
+def _portfolio_row(name: str) -> dict[str, Any]:
+    store = VersionStore(paths.portfolio_dir(name))
+    rec = store.record()
+    return {
+        "name": name,
+        "base_currency": rec.portfolio.base_currency,
+        "version": rec.version,
+        "instruments": len(rec.portfolio.instruments),
+        "transactions": len(rec.portfolio.transactions),
+    }
 
 
 def create_app(
@@ -86,6 +123,51 @@ def create_app(
         if not res.ok:
             raise HTTPException(status_code=400, detail=res.data)
         return json.loads(res.as_text())  # Decimals -> strings, same shape the LLM sees
+
+    # --- portfolios ------------------------------------------------------------------
+    @app.get("/api/portfolios")
+    async def portfolios() -> Any:
+        return {
+            "current": state.portfolio_name,
+            "portfolios": [_portfolio_row(n) for n in paths.list_portfolios()],
+        }
+
+    @app.post("/api/portfolios")
+    async def create_portfolio(body: PortfolioIn) -> Any:
+        pname = body.name.strip()
+        if not pname or "/" in pname or pname.startswith("."):
+            raise HTTPException(status_code=400, detail={"error": "invalid portfolio name"})
+        if pname in paths.list_portfolios():
+            raise HTTPException(status_code=400, detail={"error": f"portfolio {pname!r} exists"})
+        if state.chat_lock.locked():
+            raise HTTPException(status_code=409, detail={"error": "chat is busy"})
+        store = VersionStore(paths.portfolio_dir(pname))
+        store.commit(
+            Portfolio(name=pname, base_currency=body.base_currency.upper()), "Empty portfolio"
+        )
+        await state.switch(pname)
+        return {"current": pname, "portfolio": _portfolio_row(pname)}
+
+    @app.post("/api/portfolios/{pname}/select")
+    async def select_portfolio(pname: str) -> Any:
+        if state.chat_lock.locked():
+            raise HTTPException(status_code=409, detail={"error": "chat is busy"})
+        await state.switch(pname)
+        return {"current": pname}
+
+    @app.delete("/api/portfolios/{pname}")
+    async def delete_portfolio(pname: str) -> Any:
+        if state.chat_lock.locked():
+            raise HTTPException(status_code=409, detail={"error": "chat is busy"})
+        try:
+            dest = paths.delete_portfolio(pname)
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail={"error": str(e)}) from None
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail={"error": str(e)}) from None
+        if pname == state.portfolio_name:
+            await state.switch(paths.default_portfolio())
+        return {"trashed_to": str(dest), "current": state.portfolio_name}
 
     # --- reads -----------------------------------------------------------------------
     @app.get("/api/portfolio")
@@ -135,6 +217,14 @@ def create_app(
     @app.post("/api/instruments")
     async def add_instrument(body: dict[str, Any]) -> Any:
         return await call("add_instrument", body)
+
+    @app.patch("/api/instruments/{instrument_id}/listing")
+    async def set_listing(instrument_id: str, body: dict[str, Any]) -> Any:
+        return await call("set_instrument_listing", {"instrument": instrument_id, **body})
+
+    @app.patch("/api/instruments/{instrument_id}/asset-class")
+    async def set_asset_class(instrument_id: str, body: dict[str, Any]) -> Any:
+        return await call("set_asset_class", {"instrument": instrument_id, **body})
 
     @app.post("/api/versions/{version}/revert")
     async def revert(version: int) -> Any:

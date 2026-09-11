@@ -54,6 +54,8 @@ class Valuation:
     total_value: Decimal  # positions + cash, base currency
     missing: list[str] = field(default_factory=list)  # instrument ids without a price
     stale: list[str] = field(default_factory=list)  # instrument ids priced from cache
+    cash_tracked: bool = False
+    warnings: list[str] = field(default_factory=list)
 
     def breakdown(self, key: BreakdownKey) -> list[Slice]:
         buckets: dict[str, Decimal] = {}
@@ -117,11 +119,20 @@ def value_portfolio(
         valued.append(ValuedPosition(ins, pos, quote, rate, mv, cb))
 
     cash_value = ZERO
-    for cur, amt in holdings.cash.items():
-        if amt == 0:
+    warnings: list[str] = []
+    tracked = portfolio.tracks_cash()
+    cash = {k: v for k, v in holdings.cash.items() if v != 0} if tracked else {}
+    for cur, amt in cash.items():
+        if amt < 0:
+            warnings.append(
+                f"{cur} cash balance is negative ({amt:,.2f}): deposits are missing. "
+                "It is not subtracted from the total."
+            )
             continue
         c = convert(amt, cur, base, fx)
-        if c is not None:
+        if c is None:
+            warnings.append(f"no FX rate for {cur} cash; excluded from the total")
+        else:
             cash_value += c
     total = sum((vp.market_value for vp in valued if vp.market_value is not None), ZERO)
     total += cash_value
@@ -134,9 +145,11 @@ def value_portfolio(
         as_of=as_of or datetime.now(UTC),
         base_currency=base,
         positions=valued,
-        cash={k: v for k, v in holdings.cash.items() if v != 0},
+        cash=cash,
         cash_value=cash_value,
         total_value=total,
         missing=missing,
         stale=stale,
+        cash_tracked=tracked,
+        warnings=warnings,
     )

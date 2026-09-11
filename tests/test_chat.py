@@ -11,6 +11,7 @@ from pluto.chat.providers.scripted import ScriptedProvider
 from pluto.chat.session import Transcript
 from pluto.chat.tools import ChatContext, ToolRegistry
 from pluto.core.demo import demo_portfolio
+from pluto.core.model import AssetClass
 from pluto.market.providers.openfigi import SEARCH_URL as FIGI_SEARCH_URL
 from pluto.market.providers.openfigi import URL as FIGI_URL
 from pluto.market.providers.yahoo import CHART_URL, SEARCH_URL
@@ -190,7 +191,7 @@ async def test_resolve_and_add_instrument_by_symbol(registry: ToolRegistry, ctx:
         )
     )
     res = await registry.call("resolve_instrument", {"query": "Nvidia"})
-    assert res.ok and res.data["unique"]["preferred_symbol"] == "NVD.DE"  # EUR listing preferred
+    assert res.ok and res.data["unique"]["preferred_symbol"] == "NVDA"  # US company: NASDAQ
     # an explicit symbol is enough for add_transaction: instrument added on the fly
     res = await registry.call(
         "add_transaction", {"type": "buy", "instrument": "NVDA", "quantity": "10", "price": "180"}
@@ -271,3 +272,50 @@ async def test_scripted_provider_end_to_end(
 def test_system_prompt_mentions_rules():
     sp = system_prompt(demo_portfolio(), 3)
     assert "version 3" in sp and "Never guess between candidates" in sp
+
+
+@respx.mock
+async def test_set_instrument_listing_switches_quote_source(
+    registry: ToolRegistry, ctx: ChatContext
+):
+    respx.get(CHART_URL.format(symbol="VWRA.L")).mock(
+        return_value=httpx.Response(200, json=chart(193.3, "USD", exchangeName="LSE"))
+    )
+    res = await registry.call(
+        "set_instrument_listing", {"instrument": "IE00BK5BQT80", "symbol": "vwra.l"}
+    )
+    assert res.ok, res.data
+    assert (
+        res.data["instrument"]["symbols"][0] == "VWRA.L" and res.data["quote"]["currency"] == "USD"
+    )
+    assert "converted" in res.data["note"]
+    ins = ctx.store.load().instruments["IE00BK5BQT80"]
+    assert ins.preferred_symbol == "VWRA.L" and ins.currency == "EUR"  # transactions untouched
+    respx.get(CHART_URL.format(symbol="NOPE.XX")).mock(return_value=httpx.Response(404))
+    res = await registry.call("set_instrument_listing", {"instrument": "AAPL", "symbol": "NOPE.XX"})
+    assert not res.ok and "no price" in res.data["error"]
+
+
+async def test_set_asset_class_and_reclassify(registry: ToolRegistry, ctx: ChatContext):
+    res = await registry.call(
+        "set_asset_class", {"instrument": "AGGH.MI", "asset_class": "money_market"}
+    )
+    assert res.ok and res.data["instrument"]["asset_class"] == "money_market"
+    assert res.data["instrument"]["asset_class_confirmed"] is True
+    res = await registry.call("set_asset_class", {"instrument": "AAPL", "asset_class": "shares"})
+    assert not res.ok
+    # a user-set class survives reclassification; a wrong guess gets fixed
+    p = ctx.store.load()
+    p.instruments["IE00BDBRDM35"].asset_class_confirmed = True
+    p.instruments["IE00BK5BQT80"].asset_class = AssetClass.BOND
+    ctx.store.commit(p, "tamper")
+    res = await registry.call("reclassify", {})
+    assert res.ok and res.data["changed"] == [
+        {"instrument": "Vanguard FTSE All-World UCITS ETF (Acc)", "from": "bond", "to": "equity"}
+    ]
+    assert (
+        res.data["classes"]["iShares Core Global Aggregate Bond UCITS ETF EUR Hedged (Acc)"]
+        == "money_market (user)"
+    )
+    res = await registry.call("reclassify", {})
+    assert res.ok and res.data["changed"] == [] and res.data["version"] is None

@@ -1,4 +1,4 @@
-import type { ChatMessage, Portfolio, Transaction, Valuation, Version } from './types'
+import type { ChatMessage, Portfolio, PortfolioSummary, Transaction, Valuation, Version } from './types'
 import { SseParser, type SseEvent } from './sse'
 
 async function json<T>(res: Response): Promise<T> {
@@ -25,6 +25,12 @@ export const api = {
   resolve: (query: string) => fetch(`/api/instruments/resolve?query=${encodeURIComponent(query)}`).then(json<ResolveResult>),
   revert: (v: number) => fetch(`/api/versions/${v}/revert`, { method: 'POST' }).then(json<{ version: number }>),
   undo: () => fetch('/api/undo', { method: 'POST' }).then(json<{ version: number }>),
+  portfolios: () => fetch('/api/portfolios').then(json<{ current: string; portfolios: PortfolioSummary[] }>),
+  createPortfolio: (name: string, base_currency: string) =>
+    fetch('/api/portfolios', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, base_currency }) })
+      .then(json<{ current: string }>),
+  selectPortfolio: (name: string) => fetch(`/api/portfolios/${encodeURIComponent(name)}/select`, { method: 'POST' }).then(json<{ current: string }>),
+  deletePortfolio: (name: string) => fetch(`/api/portfolios/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(json<{ current: string; trashed_to: string }>),
   chatMessages: () => fetch('/api/chat/messages').then(json<{ messages: ChatMessage[]; busy: boolean; provider: string }>),
 }
 

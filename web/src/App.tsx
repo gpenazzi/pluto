@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from './api'
-import type { Portfolio, Transaction, Valuation, Version } from './types'
+import type { Portfolio, PortfolioSummary, Transaction, Valuation, Version } from './types'
 import { money, timeAgo } from './format'
 import Allocation from './components/Allocation'
 import Holdings from './components/Holdings'
@@ -8,6 +8,7 @@ import Chat from './components/Chat'
 import TransactionForm from './components/TransactionForm'
 import Transactions from './components/Transactions'
 import Versions from './components/Versions'
+import PortfolioBar from './components/PortfolioBar'
 
 const REFRESH_MS = 60_000
 
@@ -16,13 +17,14 @@ export default function App() {
   const [valuation, setValuation] = useState<Valuation | null>(null)
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [versions, setVersions] = useState<{ head: number; versions: Version[] }>({ head: 0, versions: [] })
+  const [portfolios, setPortfolios] = useState<{ current: string; portfolios: PortfolioSummary[] }>({ current: '', portfolios: [] })
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
   const refresh = useCallback(async (force = false) => {
     try {
-      const [p, t, v] = await Promise.all([api.portfolio(), api.transactions(), api.versions()])
-      setPortfolio(p); setTransactions(t.transactions); setVersions(v)
+      const [p, t, v, ps] = await Promise.all([api.portfolio(), api.transactions(), api.versions(), api.portfolios()])
+      setPortfolio(p); setTransactions(t.transactions); setVersions(v); setPortfolios(ps)
       setValuation(await api.valuation(force))
       setError(null)
     } catch (e) {
@@ -49,7 +51,10 @@ export default function App() {
     <div className="app">
       <header className="top">
         <h1>Pluto</h1>
-        <span className="sub">{portfolio?.name} · version {portfolio?.version}</span>
+        {portfolios.current && (
+          <PortfolioBar current={portfolios.current} portfolios={portfolios.portfolios} onChanged={() => refresh()} onError={setError} />
+        )}
+        <span className="sub">version {portfolio?.version}</span>
         {valuation && <span className="hero">{money(valuation.total_value, base)}</span>}
         {valuation && <span className="sub">as of {timeAgo(valuation.as_of)}{valuation.stale_prices.length ? ` · ${valuation.stale_prices.length} stale` : ''}</span>}
         <span className="spacer" />
@@ -64,7 +69,7 @@ export default function App() {
         <Transactions transactions={transactions} onChanged={() => refresh()} />
         <Versions head={versions.head} versions={versions.versions} onChanged={() => refresh()} />
       </main>
-      <Chat onChanged={() => refresh()} />
+      <Chat key={portfolios.current} onChanged={() => refresh()} />
     </div>
   )
 }

@@ -61,6 +61,8 @@ export interface Valuation {
   breakdown: Record<'asset_type' | 'asset_class' | 'currency', Slice[]>
   missing_prices: string[]
   stale_prices: string[]
+  cash_tracked: boolean
+  warnings: string[]
   providers: { name: string; failures: number; calls: number; last_error: string | null; in_cooldown: boolean }[]
 }
 
@@ -94,4 +96,12 @@ export interface ChatMessage {
   name?: string
   args?: Record<string, unknown>
   ok?: boolean
+}
+
+export interface PortfolioSummary {
+  name: string
+  base_currency: string
+  version: number
+  instruments: number
+  transactions: number
 }

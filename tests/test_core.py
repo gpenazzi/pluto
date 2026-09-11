@@ -163,3 +163,38 @@ def test_valuation_with_fx_and_missing_quotes():
     assert abs(sum((s.weight for s in v.breakdown("instrument")), D(0)) - 1) < D("0.0001")
     assert {s.label for s in v.breakdown("asset_type")} == {"etf", "stock", "cash"}
     assert v.total_value == sum(vp.market_value or 0 for vp in v.positions) + v.cash_value
+
+
+def test_cash_ignored_until_a_deposit_exists_and_negative_cash_never_subtracted():
+    p = Portfolio(name="t")
+    p.add_instrument(vwce())
+    p.add_transaction(buy("IE00BK5BQT80", "10", "100"))
+    quotes = {
+        "IE00BK5BQT80": Quote(
+            symbol="VWCE.MI", price=D("120"), currency="EUR", as_of=NOW, source="t"
+        )
+    }
+    v = value_portfolio(p, quotes, {}, as_of=NOW)
+    assert not p.tracks_cash() and not v.cash_tracked
+    assert v.cash == {} and v.cash_value == 0 and v.total_value == D("1200") and not v.warnings
+    assert v.positions[0].weight == 1
+
+    p.add_transaction(
+        Transaction(date=date(2025, 1, 2), type=TxType.DEPOSIT, currency="EUR", amount=D("500"))
+    )
+    v = value_portfolio(p, quotes, {}, as_of=NOW)
+    assert v.cash_tracked and v.cash == {"EUR": D("-500")}
+    assert v.total_value == D("1200") and v.cash_value == 0
+    assert v.warnings and "negative" in v.warnings[0]
+    assert v.positions[0].weight == 1
+
+    p.track_cash = False
+    v = value_portfolio(p, quotes, {}, as_of=NOW)
+    assert not v.cash_tracked and not v.warnings
+
+    p.track_cash = True
+    p.add_transaction(
+        Transaction(date=date(2025, 1, 3), type=TxType.DEPOSIT, currency="EUR", amount=D("800"))
+    )
+    v = value_portfolio(p, quotes, {}, as_of=NOW)
+    assert v.cash == {"EUR": D("300")} and v.total_value == D("1500") and not v.warnings

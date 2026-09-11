@@ -6,6 +6,7 @@ export default function Holdings({ valuation }: { valuation: Valuation }) {
   return (
     <section className="card">
       <h2>Holdings <span className="right dim">prices as of {new Date(valuation.as_of).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span></h2>
+      {valuation.warnings.map((w, i) => <div key={i} className="notice">{w}</div>)}
       {valuation.missing_prices.length > 0 && (
         <div className="notice">No price for: {valuation.missing_prices.join(', ')}. These positions are excluded from the total.</div>
       )}
@@ -46,7 +47,7 @@ export default function Holdings({ valuation }: { valuation: Valuation }) {
         </table>
       </div>
       <div className="dim" style={{ marginTop: 8 }}>
-        Cash {money(valuation.cash_value, base)} ·{' '}
+        {valuation.cash_tracked ? `Cash ${money(valuation.cash_value, base)}` : 'Cash not tracked (record a deposit to start)'} ·{' '}
         {valuation.providers.map((pr) => (
           <span key={pr.name} title={pr.last_error ?? ''}>
             {pr.name} {pr.failures ? `${pr.failures}/${pr.calls} failed` : 'ok'}{pr.in_cooldown ? ' (cooldown)' : ''}{' '}

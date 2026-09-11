@@ -113,3 +113,32 @@ async def test_chat_streams_events_and_keeps_history(client: httpx.AsyncClient):
     assert [m["role"] for m in hist["messages"]] == ["user", "assistant", "assistant", "assistant"]
     assert hist["messages"][-1]["text"].startswith("Deposited")
     assert (await client.get("/api/versions")).json()["head"] == 2
+
+
+async def test_portfolio_lifecycle(client: httpx.AsyncClient, pluto_home: Path):
+    r = await client.get("/api/portfolios")
+    assert r.json()["current"] == "t" and [p["name"] for p in r.json()["portfolios"]] == ["t"]
+
+    r = await client.delete("/api/portfolios/t")
+    assert r.status_code == 400 and "last portfolio" in r.json()["error"]
+
+    r = await client.post("/api/portfolios", json={"name": "savings", "base_currency": "usd"})
+    assert r.status_code == 200 and r.json()["current"] == "savings"
+    assert r.json()["portfolio"]["base_currency"] == "USD"
+    assert (await client.get("/api/portfolio")).json()["name"] == "savings"
+    assert (await client.get("/api/chat/messages")).json()["messages"] == []
+    assert (await client.post("/api/portfolios", json={"name": "savings"})).status_code == 400
+    assert (await client.post("/api/portfolios", json={"name": "../x"})).status_code == 400
+
+    r = await client.post("/api/portfolios/t/select")
+    assert r.json()["current"] == "t"
+    assert (await client.get("/api/portfolio")).json()["transactions_count"] == 19
+    assert (await client.post("/api/portfolios/nope/select")).status_code == 404
+
+    r = await client.delete("/api/portfolios/t")  # current one: switches to the other
+    assert r.status_code == 200 and r.json()["current"] == "savings"
+    assert "trash" in r.json()["trashed_to"]
+    assert [p["name"] for p in (await client.get("/api/portfolios")).json()["portfolios"]] == [
+        "savings"
+    ]
+    assert next(iter((pluto_home / "trash").iterdir())).name.startswith("t-")

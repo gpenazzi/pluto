@@ -134,7 +134,23 @@ before the next starts.
   loop, cached system prompt, effort medium, model claude-opus-5 by default) behind the same
   ChatProvider seam; selected with `--provider anthropic_api` or `PLUTO_LLM_PROVIDER`.
   Tested against a fake SDK client only: the user has no API key, so it has not run live.
-  Next: M6 (analytics).
+- 2026-09-11: polish. Fixed the web chat showing no answers (SSE framing). Added portfolio
+  management: picker + New + Delete in the UI header, `/api/portfolios` routes,
+  `pluto delete` (moves to `~/.pluto/trash`, last portfolio protected).
+- 2026-09-11: fix. A portfolio with buys but no deposits had hugely negative cash that was
+  subtracted from the total (and inflated weights). Cash is now tracked only once a
+  deposit/withdrawal exists (`Portfolio.track_cash`: auto/on/off, `pluto cash`), and a
+  negative balance is reported as a warning, never subtracted.
+- 2026-09-11: US companies are quoted from their home US exchange (resolver rule, ISIN
+  prefix US or Yahoo's first hit on a US exchange); `set_instrument_listing` tool,
+  `pluto listing`, `PATCH /api/instruments/{id}/listing` switch an existing instrument's
+  quote source (transaction currency untouched, valuation converts). NAV pricing for
+  open-ended funds was considered and dropped: the user prefers the exchange price.
+- 2026-09-11: asset classes. The name-based guess no longer defaults to equity: equity needs
+  an index/equity word, new classes money_market and multi_asset, fallback "other".
+  `set_asset_class` / `pluto classify` set a class explicitly (flag
+  `asset_class_confirmed`, never overwritten); `reclassify` / `pluto reclassify` re-guess the
+  rest. Next: M6 (analytics).
 
 ### Known limits to revisit
 

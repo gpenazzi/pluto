@@ -32,27 +32,61 @@ EXCHANGE_PRIORITY = [
 ]
 MAX_VERIFY = 10
 OTC_EXCHANGES = {"PNK", "OTC", "OQB", "OQX", "OEM"}
+US_EXCHANGES = {"NMS", "NYQ", "NGM", "NCM", "PCX", "ASE", "BTS", "NAS"}
 
+# Asset class from the name. Equity needs positive evidence (an index or equity word); a
+# name that says nothing is "other", never silently "equity".
 BOND_RE = re.compile(
     r"\b(bond|bonds|aggregate|treasury|treasuries|gilt|gilts|btp|bund|fixed income|govt|"
-    r"government|corporate|credit|high yield|money market)\b"
+    r"government|corporate|corp bond|credit|high yield|inflation.linked|tips|"
+    r"\d+\s*-\s*\d+\s*yr|\d+\s*-\s*\d+\s*y|obbligazion\w*|anleihen?|staatsanleihen?|rente)\b"
 )
-COMMODITY_RE = re.compile(r"\b(gold|silver|commodity|commodities|oil|physical|metals?)\b")
-REAL_ESTATE_RE = re.compile(r"\b(reit|reits|property|real estate|immobiliare)\b")
+MONEY_MARKET_RE = re.compile(
+    r"\b(overnight|money market|cash|€str|ester|estr|sofr|sonia|eonia|ultrashort|"
+    r"ultra short|floating rate|liquidity|geldmarkt)\b"
+)
+COMMODITY_RE = re.compile(
+    r"\b(gold|silver|platinum|palladium|commodity|commodities|oil|physical|metals?|rohstoff\w*)\b"
+)
+REAL_ESTATE_RE = re.compile(
+    r"\b(reit|reits|property|real estate|immobili\w*|grundbesitz|wohnen|epra|nareit)\b"
+)
+MULTI_ASSET_RE = re.compile(
+    r"\b(portfolio|multi.asset|multi asset|balanced|allocation|lifestrategy|"
+    r"\d{2}/\d{2}|defensive|moderate|dynamic|mixed|bilanciat\w*|mischfonds)\b"
+)
+EQUITY_RE = re.compile(
+    r"\b(equity|equities|stock|stocks|shares|share|dividend|msci|ftse|s&p|stoxx|nasdaq|"
+    r"dow jones|russell|nikkei|topix|dax|mdax|sdax|tecdax|cac|ibex|smi|aex|omx|"
+    r"all.world|world|emerging markets|small cap|mid cap|large cap|value|growth|"
+    r"momentum|quality|minimum volatility|azionari\w*|aktien)\b"
+)
 
 
 def guess_asset_class(name: str, asset_type: AssetType = AssetType.ETF) -> AssetClass:
-    """Only ETFs get a keyword guess; a stock is equity whatever its name says."""
-    if asset_type != AssetType.ETF:
+    """Only ETFs get a keyword guess; a stock is equity whatever its name says.
+    Order matters: money market before bond ("EUR Overnight"), real estate and commodity
+    before equity ("Global Real Estate", "Gold"), multi-asset before equity ("Portfolio")."""
+    if asset_type == AssetType.STOCK:
         return AssetClass.EQUITY
-    n = name.lower()
-    if BOND_RE.search(n):
+    n = name.lower().replace("-", " ")
+    if MONEY_MARKET_RE.search(n):
+        return AssetClass.MONEY_MARKET
+    if MULTI_ASSET_RE.search(n):
+        return AssetClass.MULTI_ASSET
+    bond = bool(BOND_RE.search(n))
+    equity = bool(EQUITY_RE.search(n))
+    if bond and equity:
+        return AssetClass.MULTI_ASSET
+    if bond:
         return AssetClass.BOND
     if COMMODITY_RE.search(n):
         return AssetClass.COMMODITY
     if REAL_ESTATE_RE.search(n):
         return AssetClass.REAL_ESTATE
-    return AssetClass.EQUITY
+    if equity:
+        return AssetClass.EQUITY
+    return AssetClass.OTHER
 
 
 def is_isin(s: str) -> bool:
@@ -159,7 +193,9 @@ class InstrumentResolver:
         figi_type = next((c.quote_type for c in figi if c.quote_type), None)
         asset_type = _asset_type(meta_types, figi_type)
         name = _best_name(meta_names, [c.name for c in ysearch] + [c.name for c in figi], hint)
-        preferred = _pick_preferred(listings, prefer)
+        preferred = _pick_preferred(
+            listings, prefer, us_company=asset_type == AssetType.STOCK and isin.startswith("US")
+        )
         return ResolvedInstrument(
             name=name,
             isin=isin,
@@ -183,10 +219,12 @@ class InstrumentResolver:
             return_exceptions=True,
         )
         cands: list[Candidate] = []
+        yahoo_hits: list[Candidate] = []
         if isinstance(r1, BaseException):
             notes.append(f"yahoo search unavailable: {r1}")
         else:
-            cands += [c for c in r1 if c.quote_type in ("ETF", "EQUITY")]
+            yahoo_hits = [c for c in r1 if c.quote_type in ("ETF", "EQUITY")]
+            cands += yahoo_hits
         if isinstance(r2, BaseException):
             notes.append(f"openfigi search unavailable: {r2}")
         else:
@@ -202,12 +240,17 @@ class InstrumentResolver:
             return []
         verified = await self._verify_all(symbols[:MAX_VERIFY])
         groups = _group_by_name(verified)
+        # Yahoo lists a company's home listing first: a US company's first hit is on a US exchange
+        first_hit = {_norm(c.name or ""): c.exchange for c in reversed(yahoo_hits)}
         out: list[ResolvedInstrument] = []
         for members in groups.values():
             listings = [m[0] for m in members]
-            listings.sort(key=lambda ls: (ls.currency != prefer, _exchange_rank(ls.exchange)))
             name = max((m[1] for m in members), key=len)
             asset_type = _asset_type([m[2] for m in members], None)
+            us_company = (
+                asset_type == AssetType.STOCK and first_hit.get(_norm(name)) in US_EXCHANGES
+            )
+            preferred = _pick_preferred(listings, prefer, us_company=us_company)
             out.append(
                 ResolvedInstrument(
                     name=name,
@@ -215,8 +258,8 @@ class InstrumentResolver:
                     asset_type=asset_type,
                     asset_class=guess_asset_class(name, asset_type),
                     listings=listings,
-                    preferred_symbol=listings[0].symbol,
-                    currency=listings[0].currency,
+                    preferred_symbol=preferred.symbol,
+                    currency=preferred.currency,
                     confidence=0.0,
                     notes=["ISIN unknown: ask the user for it to be sure"],
                 )
@@ -325,8 +368,17 @@ def _exchange_rank(exchange: str) -> int:
     return EXCHANGE_PRIORITY.index(exchange) if exchange in EXCHANGE_PRIORITY else 99
 
 
-def _pick_preferred(listings: list[Listing], prefer: str) -> Listing:
-    return listings[0]  # already sorted: preferred currency first, then exchange priority
+def _pick_preferred(listings: list[Listing], prefer: str, *, us_company: bool = False) -> Listing:
+    """Sort listings in place by quoting preference and return the first. A US company is
+    quoted from its home US exchange (liquid, intraday); everything else from the portfolio's
+    currency first, then the exchange priority list."""
+
+    def rank(ls: Listing) -> tuple[int, bool, int]:
+        home = 0 if (us_company and ls.exchange in US_EXCHANGES) else 1
+        return (home, ls.currency != prefer, _exchange_rank(ls.exchange))
+
+    listings.sort(key=rank)
+    return listings[0]
 
 
 def _asset_type(meta_types: list[str], fallback: str | None) -> AssetType:

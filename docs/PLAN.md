@@ -129,7 +129,12 @@ before the next starts.
   total, allocation donut with breakdown switch and legend, holdings table with quote
   source/age/staleness and provider health, transaction form + instrument search, transaction
   list with remove, version list with revert, streaming chat panel. **First deliverable
-  complete.** Next: M5 (Anthropic API provider).
+  complete.**
+- 2026-09-09: M5 done. `AnthropicApiProvider` (`anthropic` SDK, streaming, manual tool
+  loop, cached system prompt, effort medium, model claude-opus-5 by default) behind the same
+  ChatProvider seam; selected with `--provider anthropic_api` or `PLUTO_LLM_PROVIDER`.
+  Tested against a fake SDK client only: the user has no API key, so it has not run live.
+  Next: M6 (analytics).
 
 ### Known limits to revisit
 

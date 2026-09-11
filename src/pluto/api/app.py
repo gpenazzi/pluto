@@ -178,7 +178,9 @@ def create_app(
                     yield {"event": "error", "data": json.dumps(rec)}
                     yield {"event": "done", "data": "{}"}
 
-        return EventSourceResponse(stream())
+        # "\n" separators: the browser-side parser splits on blank lines and the default
+        # "\r\n" framing silently dropped every event.
+        return EventSourceResponse(stream(), sep="\n")
 
     @app.exception_handler(HTTPException)
     async def http_error(_: Request, exc: HTTPException) -> JSONResponse:

@@ -21,3 +21,17 @@ uv run pluto serve                       # serves web/dist and the API
 
 For UI development run `uv run pluto serve --no-open` and `cd web && npm run dev`; Vite
 proxies `/api` to the Python server.
+
+## LLM backend
+
+Default is your Claude Code subscription login (`claude_agent`, no key). To use the Anthropic
+API instead:
+
+```
+export ANTHROPIC_API_KEY=...            # or `ant auth login`
+uv run pluto chat --provider anthropic_api
+# or: export PLUTO_LLM_PROVIDER=anthropic_api
+```
+
+`PLUTO_MODEL` overrides the model for either backend (API default `claude-opus-5`);
+`PLUTO_EFFORT` sets the API backend's effort (`low` … `max`, default `medium`).

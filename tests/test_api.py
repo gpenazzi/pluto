@@ -108,6 +108,7 @@ async def test_chat_streams_events_and_keeps_history(client: httpx.AsyncClient):
         assert r.status_code == 200
         raw = "".join([chunk async for chunk in r.aiter_text()])
     assert "event: tool_call" in raw and "event: text" in raw and "event: done" in raw
+    assert "\r" not in raw and "\n\n" in raw  # framing the web client parses
     hist = (await client.get("/api/chat/messages")).json()
     assert [m["role"] for m in hist["messages"]] == ["user", "assistant", "assistant", "assistant"]
     assert hist["messages"][-1]["text"].startswith("Deposited")

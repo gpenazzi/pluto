@@ -9,7 +9,9 @@ the milestone order (strict) and the decisions log. Keep both up to date.
 - `make check` = ruff + pyright + pytest. Run before claiming anything works.
 - `uv run pytest -m live` runs the opt-in tests that hit real quote endpoints.
 - Web UI: `cd web && npm run build` then `uv run pluto serve`. Dev: `npm run dev` + `pluto serve --no-open`.
-  `npm run build` runs `tsc -b`, so it is also the frontend type check.
+  `npm run build` runs `tsc -b`, so it is also the frontend type check. `npm test` runs the
+  node unit tests (`web/tests`), `npm run screenshot` smoke-checks a running server in Chromium.
+- After any frontend change the user must rebuild and restart `pluto serve` to see it.
 - `uv run pluto chat -m "..."` is the quickest live check of the LLM layer (uses the
   Claude Code subscription login, no API key). Point `PLUTO_HOME` at a scratch dir first.
 
@@ -21,5 +23,7 @@ the milestone order (strict) and the decisions log. Keep both up to date.
 - Network in tests is mocked with `respx`; live tests are marked `@pytest.mark.live`.
 - The JSON API (`src/pluto/api/app.py`) calls the same tool registry as the chat. Add a
   capability to the registry once; both the LLM and the GUI get it.
+- Two LLM backends: `claude_agent` (Agent SDK, subscription, the one the user can run) and
+  `anthropic_api` (API key; the user has none, so it is only covered by fake-client tests).
 - LLM tools live in `src/pluto/chat/tools.py` only; providers adapt that registry and
   contain no portfolio logic. Test tool behaviour with `ScriptedProvider`, not a real LLM.

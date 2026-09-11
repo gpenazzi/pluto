@@ -1,4 +1,5 @@
 import type { ChatMessage, Portfolio, Transaction, Valuation, Version } from './types'
+import { SseParser, type SseEvent } from './sse'
 
 async function json<T>(res: Response): Promise<T> {
   const body = await res.json().catch(() => ({}))
@@ -46,8 +47,9 @@ export interface ResolveResult {
   hint: string | null
 }
 
-/** POST a chat message and stream server-sent events back. */
-export async function streamChat(message: string, onEvent: (ev: ChatMessage) => void): Promise<void> {
+/** POST a chat message and stream server-sent events back. Resolves with the number of
+ * events received so the caller can tell a silent stream from a normal one. */
+export async function streamChat(message: string, onEvent: (ev: ChatMessage) => void): Promise<number> {
   const res = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
@@ -59,25 +61,19 @@ export async function streamChat(message: string, onEvent: (ev: ChatMessage) => 
   }
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
-  let buffer = ''
+  const parser = new SseParser()
+  let count = 0
+  const handle = (ev: SseEvent) => {
+    const rec = JSON.parse(ev.data) as ChatMessage
+    rec.type = (rec.type ?? ev.event) as ChatMessage['type']
+    count++
+    onEvent(rec)
+  }
   for (;;) {
     const { value, done } = await reader.read()
     if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    let idx: number
-    while ((idx = buffer.indexOf('\n\n')) >= 0) {
-      const chunk = buffer.slice(0, idx)
-      buffer = buffer.slice(idx + 2)
-      let event = 'message'
-      let data = ''
-      for (const line of chunk.split('\n')) {
-        if (line.startsWith('event:')) event = line.slice(6).trim()
-        else if (line.startsWith('data:')) data += line.slice(5).trim()
-      }
-      if (!data) continue
-      const rec = JSON.parse(data) as ChatMessage
-      rec.type = (rec.type ?? event) as ChatMessage['type']
-      onEvent(rec)
-    }
+    parser.push(decoder.decode(value, { stream: true }), handle)
   }
+  parser.push(decoder.decode(), handle)
+  return count
 }

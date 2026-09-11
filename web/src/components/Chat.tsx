@@ -26,11 +26,14 @@ export default function Chat({ onChanged }: { onChanged: () => void }) {
     setMessages((m) => [...m, { role: 'user', text }])
     let changed = false
     try {
-      await streamChat(text, (ev) => {
+      const n = await streamChat(text, (ev) => {
         if (ev.type === 'done') return
         if (ev.type === 'tool_call' && WRITE_TOOLS.has(ev.name ?? '')) changed = true
         setMessages((m) => [...m, ev])
       })
+      if (n === 0) {
+        setMessages((m) => [...m, { role: 'assistant', type: 'error', text: 'No response from the server. Check the terminal running `pluto serve`.' }])
+      }
     } catch (err) {
       setMessages((m) => [...m, { role: 'assistant', type: 'error', text: String(err) }])
     } finally {

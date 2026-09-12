@@ -20,6 +20,24 @@ app = typer.Typer(help="Pluto: a local, AI-first portfolio manager.", no_args_is
 console = Console()
 err = Console(stderr=True, style="bold red")
 
+
+def _version(value: bool) -> None:
+    if value:
+        from pluto import __version__
+
+        console.print(f"pluto {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _main(
+    version: Annotated[
+        bool, typer.Option("--version", "-V", callback=_version, is_eager=True)
+    ] = False,
+) -> None:
+    """Pluto: a local, AI-first portfolio manager."""
+
+
 PortfolioOpt = Annotated[
     str | None, typer.Option("--portfolio", "-p", help="Portfolio name (default: configured)")
 ]

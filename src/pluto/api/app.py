@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+from pluto import __version__
 from pluto.chat.prompt import system_prompt
 from pluto.chat.providers import make_provider
 from pluto.chat.providers.base import ChatEvent, ChatProvider
@@ -115,7 +116,7 @@ def create_app(
         yield
         await state.close()
 
-    app = FastAPI(title="Pluto", lifespan=lifespan)
+    app = FastAPI(title="Pluto", version=__version__, lifespan=lifespan)
     app.state.pluto = state
 
     async def call(tool: str, args: dict[str, Any] | None = None) -> Any:
@@ -123,6 +124,10 @@ def create_app(
         if not res.ok:
             raise HTTPException(status_code=400, detail=res.data)
         return json.loads(res.as_text())  # Decimals -> strings, same shape the LLM sees
+
+    @app.get("/api/version")
+    async def version() -> Any:
+        return {"version": __version__}
 
     # --- portfolios ------------------------------------------------------------------
     @app.get("/api/portfolios")

@@ -108,7 +108,7 @@ After a frontend change, rebuild with `npm run build` and restart `pluto serve`.
 
 ## Command line reference
 
-Everything the UI does is also a command. `uv run pluto --help` lists them all; the main ones:
+Everything the UI does is also a command. `uv run pluto --help` lists them all (`pluto --version` prints the version); the main ones:
 
 ```
 uv run pluto chat                       # talk to Pluto in the terminal (REPL)

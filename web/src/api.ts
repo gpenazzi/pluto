@@ -11,6 +11,7 @@ async function json<T>(res: Response): Promise<T> {
 }
 
 export const api = {
+  version: () => fetch('/api/version').then(json<{ version: string }>),
   portfolio: () => fetch('/api/portfolio').then(json<Portfolio>),
   valuation: (force = false) => fetch(`/api/valuation?force=${force}`).then(json<Valuation>),
   transactions: () => fetch('/api/transactions?last=200').then(json<{ transactions: Transaction[] }>),

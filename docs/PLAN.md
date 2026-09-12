@@ -178,6 +178,9 @@ before the next starts.
   so a big portfolio viewed first left every later slice grey (`assignColors` now reuses colours
   freed by labels that left the screen). History downloads are de-duplicated per symbol so the
   performance and risk cards share one fetch, and the performance card says it is loading history.
+- 2026-09-12: **v0.1.0** tagged for publication on GitHub. The version lives in `pyproject.toml`
+  (read via `pluto.__version__`), is printed by `pluto --version`, served at `GET /api/version`
+  and shown at the bottom of the chat panel. Bump `pyproject.toml` and `web/package.json`, then tag.
 
 ### Known limits to revisit
 

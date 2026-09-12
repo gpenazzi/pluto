@@ -146,3 +146,11 @@ async def test_portfolio_lifecycle(client: httpx.AsyncClient, pluto_home: Path):
         "savings"
     ]
     assert next(iter((pluto_home / "trash").iterdir())).name.startswith("t-")
+
+
+async def test_version(client: httpx.AsyncClient):
+    from pluto import __version__
+
+    r = await client.get("/api/version")
+    assert r.status_code == 200 and r.json() == {"version": __version__}
+    assert __version__.startswith("0.1")

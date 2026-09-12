@@ -9,11 +9,13 @@ export default function Chat({ onChanged }: { onChanged: () => void }) {
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [provider, setProvider] = useState('')
+  const [version, setVersion] = useState('')
   const [showTools, setShowTools] = useState(true)
   const log = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     api.chatMessages().then((r) => { setMessages(r.messages); setBusy(r.busy); setProvider(r.provider) }).catch(() => {})
+    api.version().then((r) => setVersion(r.version)).catch(() => {})
   }, [])
   useEffect(() => { log.current?.scrollTo({ top: log.current.scrollHeight }) }, [messages, busy])
 
@@ -76,6 +78,7 @@ export default function Chat({ onChanged }: { onChanged: () => void }) {
       </form>
       <div className="hint">Runs through your Claude subscription on this machine. Say "undo" to revert the last change.</div>
       <div className="hint disclaimer">Pluto is not a financial advisor and does not give investment advice. Figures come from unofficial data sources and can be wrong or stale. Please seek professional advice before making investment decisions.</div>
+      {version && <div className="hint">Pluto {version} · MIT license</div>}
     </section>
   )
 }

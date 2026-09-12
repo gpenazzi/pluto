@@ -75,6 +75,7 @@ export default function Chat({ onChanged }: { onChanged: () => void }) {
         <button className="primary" type="submit" disabled={busy || !input.trim()}>Send</button>
       </form>
       <div className="hint">Runs through your Claude subscription on this machine. Say "undo" to revert the last change.</div>
+      <div className="hint disclaimer">Pluto is not a financial advisor and does not give investment advice. Figures come from unofficial data sources and can be wrong or stale. Please seek professional advice before making investment decisions.</div>
     </section>
   )
 }

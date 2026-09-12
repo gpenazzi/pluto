@@ -159,6 +159,8 @@ async def test_value_demo_portfolio_end_to_end(client):
         "AAPL": 200.0,
         "MSFT": 500.0,
         "ENI.MI": 24.0,
+        "SGLD.MI": 300.0,
+        "IWDP.MI": 20.0,
     }
     for sym, px in prices.items():
         cur = "USD" if sym in ("AAPL", "MSFT") else "EUR"
@@ -173,7 +175,7 @@ async def test_value_demo_portfolio_end_to_end(client):
     assert not v.missing and not v.stale
     by_id = {vp.instrument.id: vp for vp in v.positions}
     assert by_id["US0378331005"].market_value == D("15") * D("200") * D("0.5")
-    assert v.cash_value == D("4953.90") + D("1208") * D("0.5")
+    assert v.cash_value == 0 and not v.cash_tracked  # no deposits: cash is not tracked
     assert sum((s.weight for s in v.breakdown("asset_class")), D(0)).quantize(D("0.001")) == 1
 
 

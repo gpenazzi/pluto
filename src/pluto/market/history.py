@@ -78,6 +78,9 @@ class HistoryService:
         self.cache_dir = cache_dir
         self._mem: dict[str, PriceSeries] = {}
         self._sem = asyncio.Semaphore(concurrency)
+        # one lock per symbol: concurrent callers (performance and risk cards load at the
+        # same time) share one download instead of hitting Yahoo twice for the same series
+        self._locks: dict[str, asyncio.Lock] = {}
 
     # --- cache -----------------------------------------------------------------------
     def _path(self, symbol: str) -> Path | None:
@@ -111,6 +114,11 @@ class HistoryService:
     # --- fetching --------------------------------------------------------------------
     async def symbol_series(self, symbol: str, start: date) -> PriceSeries:
         """Series for one symbol covering start..today, refreshed incrementally."""
+        lock = self._locks.setdefault(symbol, asyncio.Lock())
+        async with lock:
+            return await self._symbol_series(symbol, start)
+
+    async def _symbol_series(self, symbol: str, start: date) -> PriceSeries:
         today = date.today()
         ps = self._load(symbol)
         need_from: date | None = None

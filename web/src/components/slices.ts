@@ -18,20 +18,35 @@ export function foldSlices(slices: Slice[]): Slice[] {
   return [...head, { label: `Other (${rest.length})`, value: value.toFixed(2), weight_pct: weight.toFixed(2) }]
 }
 
-/** Stable colour per entity within one breakdown key: first-seen label takes the next slot. */
+/**
+ * Give every label in `labels` a colour, keeping the ones already in `assigned`.
+ * A new label takes the first palette colour not used by a label on screen right now, so a
+ * label keeps its colour while it is visible, and a colour freed by a label that left (another
+ * portfolio, a removed holding) is reused instead of falling back to grey.
+ */
+export function assignColors(
+  assigned: Map<string, string>, labels: string[], palette: string[], other: string,
+): Map<string, string> {
+  const onScreen = new Set(labels)
+  const used = new Set<string>()
+  for (const [label, color] of assigned) if (onScreen.has(label) && color !== other) used.add(color)
+  for (const label of labels) {
+    const current = assigned.get(label)
+    if (current !== undefined && current !== other) continue
+    if (label.startsWith('Other')) { assigned.set(label, other); continue }
+    const free = palette.find((c) => !used.has(c)) ?? other
+    assigned.set(label, free)
+    if (free !== other) used.add(free)
+  }
+  return assigned
+}
+
+/** Stable colour per entity within one breakdown key: first-seen label takes the next free slot. */
 export function useSliceColors(slices: Slice[], key: string): Map<string, string> {
   const [assigned] = useState(() => new Map<string, Map<string, string>>())
   return useMemo(() => {
     if (!assigned.has(key)) assigned.set(key, new Map())
-    const m = assigned.get(key)!
-    for (const s of slices) {
-      if (m.has(s.label)) continue
-      if (s.label.startsWith('Other')) { m.set(s.label, cssVar('--other')); continue }
-      const used = new Set(m.values())
-      const slot = SLOTS.map(cssVar).find((c) => !used.has(c)) ?? cssVar('--other')
-      m.set(s.label, slot)
-    }
+    const m = assignColors(assigned.get(key)!, slices.map((s) => s.label), SLOTS.map(cssVar), cssVar('--other'))
     return new Map(m)
   }, [slices, key, assigned])
 }
-

@@ -129,12 +129,30 @@ def test_transactions_are_kept_sorted_by_date():
 
 
 def test_cash_from_deposits_buys_and_dividends():
-    h = compute_holdings(demo_portfolio())
-    # EUR: 25000 - buys - fees + dividends
-    assert h.cash["EUR"] > 0
-    assert h.cash["USD"] == D("6000") - (D("15") * D("171.30") + 1) - (D("7") * D("418.50") + 1) + (
-        D("2") * D("355") - 1
+    p = Portfolio(name="t")
+    p.add_instrument(vwce())
+    p.add_transaction(
+        Transaction(date=date(2025, 1, 1), type=TxType.DEPOSIT, amount=D("1000"), currency="EUR")
     )
+    p.add_transaction(buy("IE00BK5BQT80", "2", "100", "2025-01-02", fees="1"))
+    p.add_transaction(
+        Transaction(
+            date=date(2025, 3, 1),
+            type=TxType.DIVIDEND,
+            instrument_id="IE00BK5BQT80",
+            amount=D("10"),
+            currency="EUR",
+        )
+    )
+    h = compute_holdings(p)
+    assert h.cash["EUR"] == D("1000") - (D("2") * D("100") + 1) + D("10")
+
+
+def test_demo_portfolio_has_no_cash():
+    p = demo_portfolio()
+    assert not p.tracks_cash()
+    h = compute_holdings(p)
+    assert len(h.positions) == len(p.instruments) == 8
 
 
 def test_demo_portfolio_round_trips_through_json():
@@ -159,9 +177,16 @@ def test_valuation_with_fx_and_missing_quotes():
     assert by_id["IE00BK5BQT80"].market_value == D("180") * D("166")
     assert by_id["US0378331005"].market_value == D("15") * D("200") * D("0.5")
     assert "US0378331005" in v.stale
-    assert set(v.missing) == {"IE00B5BMR087", "IE00BDBRDM35", "US5949181045", "IT0003132476"}
+    assert set(v.missing) == {
+        "IE00B5BMR087",
+        "IE00BDBRDM35",
+        "US5949181045",
+        "IT0003132476",
+        "IE00B579F325",
+        "IE00B1FZS350",
+    }
     assert abs(sum((s.weight for s in v.breakdown("instrument")), D(0)) - 1) < D("0.0001")
-    assert {s.label for s in v.breakdown("asset_type")} == {"etf", "stock", "cash"}
+    assert {s.label for s in v.breakdown("asset_type")} == {"etf", "stock"}
     assert v.total_value == sum(vp.market_value or 0 for vp in v.positions) + v.cash_value
 
 

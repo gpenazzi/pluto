@@ -85,7 +85,12 @@ export default function Performance({ currency, refreshKey }: { currency: string
           {data && data.missing_history.length > 0 && <div className="dim" style={{ marginTop: 6 }}>No price history for: {data.missing_history.join(', ')}</div>}
         </>
       )}
-      {loading && !m && <div className="dim">Loading history…</div>}
+      {loading && !m && (
+        <div className="notice">
+          Loading price history… The first view of a portfolio downloads daily prices for every holding
+          and the benchmark; later views use the cache.
+        </div>
+      )}
     </section>
   )
 }

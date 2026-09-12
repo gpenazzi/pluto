@@ -1,4 +1,10 @@
-"""The demo portfolio: a plausible European retail portfolio in EUR."""
+"""The demo portfolio: a plausible European retail portfolio in EUR.
+
+Eight holdings across four asset classes and two currencies, built up over three and a
+half years of purchases so that every analytics view (performance, look-through, risk)
+has something to show. Prices are the real closes on the transaction dates. There are no
+deposits: cash is not tracked, so the pie shows holdings only.
+"""
 
 from __future__ import annotations
 
@@ -62,6 +68,7 @@ DEMO_INSTRUMENTS: list[Instrument] = [
         isin="US0378331005",
         name="Apple Inc.",
         asset_type=AssetType.STOCK,
+        asset_class=AssetClass.EQUITY,
         currency="USD",
         listings=[Listing(symbol="AAPL", exchange="NMS", currency="USD")],
         tags={"region": "us", "sector": "technology"},
@@ -71,6 +78,7 @@ DEMO_INSTRUMENTS: list[Instrument] = [
         isin="US5949181045",
         name="Microsoft Corp.",
         asset_type=AssetType.STOCK,
+        asset_class=AssetClass.EQUITY,
         currency="USD",
         listings=[Listing(symbol="MSFT", exchange="NMS", currency="USD")],
         tags={"region": "us", "sector": "technology"},
@@ -80,9 +88,39 @@ DEMO_INSTRUMENTS: list[Instrument] = [
         isin="IT0003132476",
         name="Eni S.p.A.",
         asset_type=AssetType.STOCK,
+        asset_class=AssetClass.EQUITY,
         currency="EUR",
         listings=[Listing(symbol="ENI.MI", exchange="MIL", currency="EUR")],
         tags={"region": "europe", "sector": "energy"},
+    ),
+    Instrument(
+        id="IE00B579F325",
+        isin="IE00B579F325",
+        name="Invesco Physical Gold ETC",
+        asset_type=AssetType.ETF,
+        asset_class=AssetClass.COMMODITY,
+        asset_class_confirmed=True,
+        currency="EUR",
+        listings=[
+            Listing(symbol="SGLD.MI", exchange="MIL", currency="EUR"),
+            Listing(symbol="8PSG.DE", exchange="GER", currency="EUR"),
+            Listing(symbol="SGLD.L", exchange="LSE", currency="USD"),
+        ],
+        tags={"sector": "gold"},
+    ),
+    Instrument(
+        id="IE00B1FZS350",
+        isin="IE00B1FZS350",
+        name="iShares Developed Markets Property Yield UCITS ETF (Dist)",
+        asset_type=AssetType.ETF,
+        asset_class=AssetClass.REAL_ESTATE,
+        asset_class_confirmed=True,
+        currency="EUR",
+        listings=[
+            Listing(symbol="IWDP.MI", exchange="MIL", currency="EUR"),
+            Listing(symbol="IQQ6.DE", exchange="GER", currency="EUR"),
+        ],
+        tags={"region": "world", "sector": "real_estate"},
     ),
 ]
 
@@ -106,27 +144,34 @@ def demo_portfolio(name: str = "demo") -> Portfolio:
     p = Portfolio(name=name, base_currency="EUR")
     for ins in DEMO_INSTRUMENTS:
         p.add_instrument(ins)
-    B, S, DV, DP = TxType.BUY, TxType.SELL, TxType.DIVIDEND, TxType.DEPOSIT
+    B, S, DV = TxType.BUY, TxType.SELL, TxType.DIVIDEND
+    VWCE, CSSPX, AGGH = "IE00BK5BQT80", "IE00B5BMR087", "IE00BDBRDM35"
+    AAPL, MSFT, ENI = "US0378331005", "US5949181045", "IT0003132476"
+    GOLD, IWDP = "IE00B579F325", "IE00B1FZS350"
+    etf, us = {"fees": D("2.95")}, {"fees": D("1.00")}
+    # prices are the actual closes on those dates (Yahoo, Milan / Nasdaq)
     rows = [
-        _tx("2024-01-08", DP, None, None, None, "EUR", amount=D("25000")),
-        _tx("2024-01-10", B, "IE00BK5BQT80", "60", "108.40", "EUR", fees=D("2.95")),
-        _tx("2024-01-10", B, "IE00B5BMR087", "25", "460.10", "EUR", fees=D("2.95")),
-        _tx("2024-02-15", B, "IE00BDBRDM35", "600", "4.71", "EUR", fees=D("2.95")),
-        _tx("2024-03-20", DP, None, None, None, "USD", amount=D("6000")),
-        _tx("2024-03-21", B, "US0378331005", "15", "171.30", "USD", fees=D("1.00")),
-        _tx("2024-03-21", B, "US5949181045", "7", "418.50", "USD", fees=D("1.00")),
-        _tx("2024-06-01", DP, None, None, None, "EUR", amount=D("8000")),
-        _tx("2024-06-03", B, "IT0003132476", "400", "14.60", "EUR", fees=D("2.95")),
-        _tx("2024-07-05", B, "IE00BK5BQT80", "40", "117.20", "EUR", fees=D("2.95")),
-        _tx("2024-09-20", DV, "IT0003132476", None, None, "EUR", amount=D("94.00")),
-        _tx("2025-01-10", DP, None, None, None, "EUR", amount=D("8000")),
-        _tx("2025-01-14", B, "IE00BK5BQT80", "50", "129.80", "EUR", fees=D("2.95")),
-        _tx("2025-04-08", S, "US5949181045", "2", "355.00", "USD", fees=D("1.00")),
-        _tx("2025-05-20", DV, "IT0003132476", None, None, "EUR", amount=D("100.00")),
-        _tx("2025-09-01", DP, None, None, None, "EUR", amount=D("7000")),
-        _tx("2025-09-11", B, "IE00B5BMR087", "10", "580.30", "EUR", fees=D("2.95")),
-        _tx("2026-02-01", DP, None, None, None, "EUR", amount=D("5000")),
-        _tx("2026-02-03", B, "IE00BK5BQT80", "30", "152.10", "EUR", fees=D("2.95")),
+        _tx("2023-01-16", B, VWCE, "60", "94.30", "EUR", **etf),
+        _tx("2023-01-16", B, CSSPX, "15", "382.32", "EUR", **etf),
+        _tx("2023-02-15", B, AGGH, "1500", "4.58", "EUR", **etf),
+        _tx("2023-03-20", B, AAPL, "15", "157.40", "USD", **us),
+        _tx("2023-03-20", B, MSFT, "7", "272.23", "USD", **us),
+        _tx("2023-06-05", B, ENI, "400", "13.10", "EUR", **etf),
+        _tx("2023-06-05", B, GOLD, "20", "176.49", "EUR", **etf),
+        _tx("2023-09-11", B, IWDP, "250", "19.96", "EUR", **etf),
+        _tx("2023-09-20", DV, ENI, None, None, "EUR", amount=D("94.00")),
+        _tx("2024-01-15", B, VWCE, "40", "107.54", "EUR", **etf),
+        _tx("2024-04-08", S, MSFT, "2", "424.59", "USD", **us),
+        _tx("2024-05-22", DV, ENI, None, None, "EUR", amount=D("100.00")),
+        _tx("2024-07-08", B, CSSPX, "10", "542.57", "EUR", **etf),
+        _tx("2024-11-27", DV, IWDP, None, None, "EUR", amount=D("42.50")),
+        _tx("2025-01-13", B, VWCE, "50", "133.47", "EUR", **etf),
+        _tx("2025-05-21", DV, ENI, None, None, "EUR", amount=D("100.00")),
+        _tx("2025-09-08", B, CSSPX, "10", "591.73", "EUR", **etf),
+        _tx("2025-11-26", DV, IWDP, None, None, "EUR", amount=D("45.00")),
+        _tx("2026-02-02", B, VWCE, "30", "148.50", "EUR", **etf),
+        _tx("2026-05-20", DV, ENI, None, None, "EUR", amount=D("104.00")),
+        _tx("2026-06-08", B, GOLD, "5", "361.39", "EUR", **etf),
     ]
     for tx in rows:
         p.add_transaction(tx)

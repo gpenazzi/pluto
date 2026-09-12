@@ -37,8 +37,8 @@ def registry(ctx: ChatContext) -> ToolRegistry:
 
 async def test_get_portfolio_and_schema(registry: ToolRegistry):
     res = await registry.call("get_portfolio", {})
-    assert res.ok and res.data["version"] == 1 and len(res.data["positions"]) == 6
-    assert res.data["cash"]["EUR"] == D("4953.90")
+    assert res.ok and res.data["version"] == 1 and len(res.data["positions"]) == 8
+    assert res.data["cash"] == {} and res.data["cash_tracked"] is False
     schema = registry.specs["add_transaction"].json_schema()
     assert schema["properties"]["type"]["$ref"].endswith("TxType") or "enum" in str(schema)
     assert "title" not in schema
@@ -216,6 +216,8 @@ async def test_get_valuation_and_get_quote(registry: ToolRegistry):
         "AAPL": 200.0,
         "MSFT": 500.0,
         "ENI.MI": 24.0,
+        "SGLD.MI": 300.0,
+        "IWDP.MI": 20.0,
     }
     for sym, px in prices.items():
         cur = "USD" if sym in ("AAPL", "MSFT") else "EUR"
@@ -321,6 +323,19 @@ async def test_set_asset_class_and_reclassify(registry: ToolRegistry, ctx: ChatC
     assert res.ok and res.data["changed"] == [] and res.data["version"] is None
 
 
+HISTORY_SYMBOLS = {
+    "VWCE.MI",
+    "CSSPX.MI",
+    "AGGH.MI",
+    "AAPL",
+    "MSFT",
+    "ENI.MI",
+    "SGLD.MI",
+    "IWDP.MI",
+    "USDEUR=X",
+}
+
+
 @respx.mock
 async def test_get_performance_tool(registry: ToolRegistry, ctx: ChatContext, tmp_path: Path):
     from datetime import date, timedelta
@@ -331,7 +346,7 @@ async def test_get_performance_tool(registry: ToolRegistry, ctx: ChatContext, tm
     ctx.history = HistoryService(ctx.quotes.client, tmp_path / "hist")
     start = date.today() - timedelta(days=400)
     n = 401
-    for sym in ("VWCE.MI", "CSSPX.MI", "AGGH.MI", "AAPL", "MSFT", "ENI.MI", "USDEUR=X"):
+    for sym in HISTORY_SYMBOLS:
         cur = "USD" if sym in ("AAPL", "MSFT") else "EUR"
         closes: list[float | None] = [
             1.0 if sym == "USDEUR=X" else 100.0 + i * 0.1 for i in range(n)
@@ -372,7 +387,7 @@ async def test_get_performance_excludes_short_history_holdings(
 
     ctx.history = HistoryService(ctx.quotes.client, tmp_path / "hist")
     start = date.today() - timedelta(days=400)
-    for sym in ("VWCE.MI", "CSSPX.MI", "AGGH.MI", "AAPL", "MSFT", "USDEUR=X"):
+    for sym in HISTORY_SYMBOLS - {"ENI.MI"}:
         cur = "USD" if sym in ("AAPL", "MSFT") else "EUR"
         closes: list[float | None] = [1.0 if sym == "USDEUR=X" else 100.0] * 401
         respx.get(CHART_URL.format(symbol=sym)).mock(
@@ -407,6 +422,8 @@ async def test_exposure_and_risk_report_unavailability_plainly(
         ("AAPL", 200, "USD"),
         ("MSFT", 500, "USD"),
         ("ENI.MI", 24, "EUR"),
+        ("SGLD.MI", 300, "EUR"),
+        ("IWDP.MI", 20, "EUR"),
         ("USDEUR=X", 0.5, "EUR"),
     ]:
         respx.get(CHART_URL.format(symbol=sym), params__contains={"range": "1d"}).mock(

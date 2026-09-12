@@ -69,7 +69,7 @@ async def test_valuation_reports_provider_health(client: httpx.AsyncClient):
     r = await client.get("/api/valuation")
     assert r.status_code == 200
     body = r.json()
-    assert len(body["missing_prices"]) == 6
+    assert len(body["missing_prices"]) == 8
     assert {p["name"] for p in body["providers"]} == {"yahoo", "justetf", "frankfurter"}
     assert any(p["failures"] > 0 for p in body["providers"])
 
@@ -83,6 +83,8 @@ async def test_valuation_ok(client: httpx.AsyncClient):
         ("AAPL", 200, "USD"),
         ("MSFT", 500, "USD"),
         ("ENI.MI", 24, "EUR"),
+        ("SGLD.MI", 300, "EUR"),
+        ("IWDP.MI", 20, "EUR"),
         ("USDEUR=X", 0.5, "EUR"),
     ]:
         respx.get(CHART_URL.format(symbol=sym)).mock(
@@ -132,7 +134,9 @@ async def test_portfolio_lifecycle(client: httpx.AsyncClient, pluto_home: Path):
 
     r = await client.post("/api/portfolios/t/select")
     assert r.json()["current"] == "t"
-    assert (await client.get("/api/portfolio")).json()["transactions_count"] == 19
+    assert (await client.get("/api/portfolio")).json()["transactions_count"] == len(
+        demo_portfolio().transactions
+    )
     assert (await client.post("/api/portfolios/nope/select")).status_code == 404
 
     r = await client.delete("/api/portfolios/t")  # current one: switches to the other

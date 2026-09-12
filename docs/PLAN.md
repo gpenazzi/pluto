@@ -171,6 +171,13 @@ before the next starts.
   correlation matrix, diversification ratio; `get_risk`, `pluto risk`, `GET /api/risk`, Risk
   card with heatmap. Every analytics response carries `available`/`reason`; the UI shows
   "X is not available: <reason>" instead of failing. Next: backdating helper, then M7.
+- 2026-09-12: demo rebuilt for publication. Eight holdings across equity, bond, commodity
+  (gold ETC) and real estate, in EUR and USD, bought from January 2023 with the real closes on
+  those dates, dividends and one sale; no deposits, so cash is not tracked and the pie shows
+  holdings only. Fixed the allocation colours: the palette map lived across portfolio switches,
+  so a big portfolio viewed first left every later slice grey (`assignColors` now reuses colours
+  freed by labels that left the screen). History downloads are de-duplicated per symbol so the
+  performance and risk cards share one fetch, and the performance card says it is loading history.
 
 ### Known limits to revisit
 

@@ -12,7 +12,7 @@ required.
   same for anyone who prefers clicking.
 - **Every change is revertible.** The portfolio is stored as an append-only version history.
   Revert or undo never deletes anything.
-- **Quotes from multiple source.** A chain of providers (Yahoo Finance, justETF, Frankfurter for FX) with
+- **Quotes from multiple sources.** A chain of providers (Yahoo Finance, justETF, Frankfurter for FX) with
   caching, health tracking and explicit staleness. Every price shows its source and age.
 - **Analytics.** Allocation by instrument, asset class, type and currency; performance
   (time- and money-weighted, drawdown, benchmark) for your actual history and for a backtest

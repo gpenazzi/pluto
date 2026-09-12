@@ -19,6 +19,12 @@ required.
   of today's composition; look-through by region, country and sector from ETF holdings data;
   risk decomposition with volatility, beta and correlations.
 
+![Recording a purchase through the chat](docs/media/chat.gif)
+
+> **Project status.** Pluto is a vibe-coded hobby project, written with an AI coding agent
+> for personal use and published as is. There is no roadmap, no support, and feature requests
+> and bug reports will not be worked on. Fork it if you find it useful.
+
 > **Disclaimer.** Pluto is not a financial advisor and does not give investment advice. The
 > figures it shows come from unofficial data sources and can be wrong, stale or incomplete.
 > Please seek professional advice before making investment decisions.
@@ -44,6 +50,17 @@ The demo portfolio holds eight instruments (world and S&P 500 equity ETFs, a bon
 gold ETC, a property ETF, three stocks in EUR and USD) bought since January 2023, so every
 view has something to show. `uv run pluto demo --force` recreates it. Create your own with
 **New** in the UI or `uv run pluto init <name>`.
+
+## Screenshots
+
+The dashboard with the demo portfolio: allocation, holdings with quote source and age, and
+the chat.
+
+![Dashboard](docs/media/dashboard.png)
+
+Performance against a benchmark and look-through by region.
+
+![Performance and look-through](docs/media/analytics.png)
 
 ## How it works
 
